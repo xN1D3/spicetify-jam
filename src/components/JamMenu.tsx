@@ -339,8 +339,8 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                                     <span className={`jam-status-dot ${isDisconnected ? 'disconnected' : 'active'}`} />
                                                     <span>
                                                         {isHostMember
-                                                            ? (isDisconnected ? 'Host · Reconnecting...' : 'Host · Active')
-                                                            : (isDisconnected ? 'Listener · Reconnecting...' : 'Listener · Connected')}
+                                                            ? (isDisconnected ? 'Host · Reconnecting...' : 'Host')
+                                                            : (isDisconnected ? 'Listener · Reconnecting...' : 'Listener')}
                                                     </span>
                                                 </div>
                                             );
