@@ -38,6 +38,7 @@ const I = {
     // Chevron for collapsible sections
     chevronDown: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>,
     chevronUp:   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15"/></svg>,
+    resume:      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>,
 };
 
 const fmtTime = (ms: number) => {
@@ -191,10 +192,24 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     {j.savedSession && (
                         <button
                             className="jam-btn green full"
-                            style={{ marginBottom: 8, background: 'linear-gradient(135deg, #1db954, #1ed760)', color: '#000', fontWeight: 700 }}
+                            style={{
+                                marginBottom: 8,
+                                background: 'linear-gradient(135deg, #1db954, #1ed760)',
+                                color: '#000',
+                                fontWeight: 700,
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: 8
+                            }}
                             onClick={() => j.resumeSession()}
                         >
-                            🔄 {j.savedSession.role === 'host' ? `Resume Session (${j.savedSession.jamId}) · Host` : `Rejoin Session (${j.savedSession.jamId}) · With ${j.savedSession.hostName || 'Host'}`}
+                            {I.resume}
+                            <span>
+                                {j.savedSession.role === 'host'
+                                    ? `Resume Session (${j.savedSession.jamId}) · Host`
+                                    : `Rejoin Session (${j.savedSession.jamId}) · With ${j.savedSession.hostName || 'Host'}`}
+                            </span>
                         </button>
                     )}
                     <button className={`jam-btn ${j.savedSession ? 'outline' : 'green'} full`} onClick={() => j.startJam()}>
