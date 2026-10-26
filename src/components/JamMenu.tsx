@@ -121,7 +121,13 @@ const AddedByAvatar: React.FC<{ name: string; image: string }> = ({ name, image 
 // ── Main Panel ───────────────────────────────
 const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const j = useJam();
-    const [joinInput, setJoinInput] = useState('');
+    const [joinInput, setJoinInput] = useState(() => {
+        try {
+            const hash = window.location.hash;
+            if (hash.includes('jam=')) return hash.split('jam=')[1];
+        } catch {}
+        return j.savedSession?.role === 'guest' ? j.savedSession.jamId : '';
+    });
     const [qrUrl, setQrUrl] = useState('');
     const [copied, setCopied] = useState(false);
     const [showQr, setShowQr] = useState(false);
@@ -182,16 +188,16 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         <h2 className="jam-hero-title">Host a Listening Session</h2>
                         <p className="jam-hero-desc">Sync Spotify playback with friends in real‑time via P2P — no accounts needed.</p>
                     </div>
-                    {j.savedHostId && (
+                    {j.savedSession && (
                         <button
                             className="jam-btn green full"
                             style={{ marginBottom: 8, background: 'linear-gradient(135deg, #1db954, #1ed760)', color: '#000', fontWeight: 700 }}
-                            onClick={() => j.startJam(j.savedHostId!)}
+                            onClick={() => j.resumeSession()}
                         >
-                            🔄 เข้าห้องเดิม / Resume ({j.savedHostId})
+                            🔄 เข้าห้องเดิม / Resume ({j.savedSession.jamId}) {j.savedSession.role === 'host' ? '(Host)' : `(With ${j.savedSession.hostName || 'Host'})`}
                         </button>
                     )}
-                    <button className={`jam-btn ${j.savedHostId ? 'outline' : 'green'} full`} onClick={() => j.startJam()}>
+                    <button className={`jam-btn ${j.savedSession ? 'outline' : 'green'} full`} onClick={() => j.startJam()}>
                         Start a new Jam
                     </button>
                     <div className="jam-divider"><div className="jam-divider-line"/><span>or join one</span><div className="jam-divider-line"/></div>
@@ -214,7 +220,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     <div className="jam-logo-icon active">{I.jam}</div>
                     <div style={{ minWidth: 0 }}>
                         <div className="jam-title">Jam</div>
-                        <div className="jam-subtitle">{j.isHost ? `Hosting · ${j.members.length} listening` : `With ${j.hostName}`}</div>
+                        <div className="jam-subtitle">{j.isHost ? `Hosting · ${j.members.length} listening · Room: ${j.jamId}` : `With ${j.hostName} · Room: ${j.jamId}`}</div>
                     </div>
                 </div>
                 <div className="jam-header-right">
@@ -330,33 +336,31 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     </div>
                 )}
 
-                {j.isHost && (
-                    <div className="jam-section-card">
-                        <div className="jam-section-title">Invite</div>
-                        <div className="jam-id-row">
-                            <span className="jam-id-code">{j.jamId}</span>
-                            <button
-                                className={`jam-icon-btn ${copied ? 'green' : ''}`}
-                                onClick={() => { copy(j.jamId, 'Copied!'); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-                            >{copied ? I.check : I.copy}</button>
-                        </div>
-                        <div className="jam-share-row">
-                            <button className="jam-btn outline flex-1"
-                                onClick={() => copy(`${window.location.origin}${window.location.pathname}#jam=${j.jamId}`, 'Link copied!')}>
-                                {I.link} Copy Link
-                            </button>
-                            <button className="jam-btn outline flex-1" onClick={() => setShowQr(v => !v)}>
-                                {I.qr} {showQr ? 'Hide QR' : 'QR Code'}
-                            </button>
-                        </div>
-                        {showQr && qrUrl && (
-                            <div className="jam-qr-box">
-                                <img src={qrUrl} alt="QR"/>
-                                <div className="jam-qr-label">Scan to join</div>
-                            </div>
-                        )}
+                <div className="jam-section-card">
+                    <div className="jam-section-title">{j.isHost ? 'Invite' : 'Room Info'}</div>
+                    <div className="jam-id-row">
+                        <span className="jam-id-code">{j.jamId}</span>
+                        <button
+                            className={`jam-icon-btn ${copied ? 'green' : ''}`}
+                            onClick={() => { copy(j.jamId, 'Copied!'); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                        >{copied ? I.check : I.copy}</button>
                     </div>
-                )}
+                    <div className="jam-share-row">
+                        <button className="jam-btn outline flex-1"
+                            onClick={() => copy(`${window.location.origin}${window.location.pathname}#jam=${j.jamId}`, 'Link copied!')}>
+                            {I.link} Copy Link
+                        </button>
+                        <button className="jam-btn outline flex-1" onClick={() => setShowQr(v => !v)}>
+                            {I.qr} {showQr ? 'Hide QR' : 'QR Code'}
+                        </button>
+                    </div>
+                    {showQr && qrUrl && (
+                        <div className="jam-qr-box">
+                            <img src={qrUrl} alt="QR"/>
+                            <div className="jam-qr-label">Scan to join</div>
+                        </div>
+                    )}
+                </div>
 
                 {/* ── QUEUE ── */}
                 {j.queue.length > 0 && (

@@ -4,6 +4,12 @@ import Peer, { DataConnection } from 'peerjs';
 
 interface TrackInfo { title: string; artist: string; artUrl: string; uri?: string; uid?: string; isManual?: boolean; addedBy?: { name: string; image: string }; }
 interface Member { id: string; name: string; isHost?: boolean; image?: string; }
+export interface LastSessionInfo {
+    role: 'host' | 'guest';
+    jamId: string;
+    hostName?: string;
+}
+
 interface JamState {
     isHost: boolean; jamId: string; members: Member[]; connected: boolean; error: string | null;
     nowPlaying: TrackInfo | null; hostName: string; queue: TrackInfo[];
@@ -11,8 +17,10 @@ interface JamState {
     updateAvailable: boolean;
     reconnecting: boolean;
     savedHostId: string | null;
+    savedSession: LastSessionInfo | null;
+    resumeSession: () => Promise<void>;
     startJam: (requestedId?: string) => Promise<void>; joinJam: (id: string, name?: string) => Promise<void>;
-    leaveJam: () => void; addToQueue: (uri: string, sender?: { name: string; image: string }) => void; removeFromQueue: (uri: string, uid?: string) => void;
+    leaveJam: (clearSavedSession?: boolean) => void; addToQueue: (uri: string, sender?: { name: string; image: string }) => void; removeFromQueue: (uri: string, uid?: string) => void;
     moveInQueue: (from: number, to: number) => void; requestSync: () => void;
     jumpToTrack: (uri: string) => void; seekTo: (ms: number) => void;
     kickMember: (id: string) => void; toggleGuestControls: () => void;
@@ -230,16 +238,31 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const [members, setMembers] = useState<Member[]>([]);
     const [connected, setConnected] = useState(false);
     const [reconnecting, setReconnecting] = useState(false);
-    const [savedHostId, setSavedHostId] = useState<string | null>(() => {
+    const [savedSession, setSavedSession] = useState<LastSessionInfo | null>(() => {
         try {
-            const saved = localStorage.getItem('jam_saved_host_id');
-            const ts = Number(localStorage.getItem('jam_saved_host_ts') || 0);
-            if (saved && Date.now() - ts < 30 * 60 * 1000) {
-                return saved;
+            const raw = localStorage.getItem('jam_saved_session');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed?.jamId && Date.now() - Number(parsed.ts || 0) < 2 * 60 * 60 * 1000) {
+                    return { role: parsed.role || 'host', jamId: parsed.jamId, hostName: parsed.hostName };
+                }
+            }
+            const savedLegacy = localStorage.getItem('jam_saved_host_id');
+            const tsLegacy = Number(localStorage.getItem('jam_saved_host_ts') || 0);
+            if (savedLegacy && Date.now() - tsLegacy < 2 * 60 * 60 * 1000) {
+                return { role: 'host', jamId: savedLegacy };
             }
         } catch {}
         return null;
     });
+    const savedHostId = savedSession?.role === 'host' ? savedSession.jamId : null;
+    const setSavedHostId = (id: string | null) => {
+        if (id) {
+            setSavedSession({ role: 'host', jamId: id });
+        } else {
+            setSavedSession(null);
+        }
+    };
     const [error, setError] = useState<string | null>(null);
     const [nowPlaying, setNowPlaying] = useState<TrackInfo | null>(null);
     const [hostName, setHostName] = useState('Host');
@@ -341,6 +364,18 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
         };
         checkUpdate();
+        const cleanup = () => {
+            if (peerRef.current && !peerRef.current.destroyed) {
+                try { peerRef.current.destroy(); } catch {}
+            }
+        };
+        window.addEventListener('beforeunload', cleanup);
+        window.addEventListener('unload', cleanup);
+        return () => {
+            window.removeEventListener('beforeunload', cleanup);
+            window.removeEventListener('unload', cleanup);
+            cleanup();
+        };
     }, []);
     useEffect(() => { refs.current.guestControls = guestControls; }, [guestControls]);
     useEffect(() => { refs.current.jamId = jamId; }, [jamId]);
@@ -355,9 +390,9 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (refs.current.isHost) {
             result.push({ id: 'host', name: me.name || 'Host', image: me.image || '', isHost: true });
             const seenNames = new Set<string>();
-            conns.current.forEach((conn, pid) => {
-                if (!conn || !conn.open) return;
-                const m = memberRegistry.current.get(pid);
+            memberRegistry.current.forEach((m, pid) => {
+                const conn = conns.current.get(pid);
+                if (!conn) return;
                 const name = m?.name || 'Listener';
                 if (name === me.name) return;
                 if (seenNames.has(name)) return;
@@ -710,7 +745,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } 
     };
 
-    const leaveJam = useCallback(async () => {
+    const leaveJam = useCallback(async (clearSavedSession = true) => {
         // ── 1. Clear Spotify's native queue in ONE batched call ──
         const jamQueue = [...queueRef.current];
         if (jamQueue.length > 0) {
@@ -726,11 +761,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (reorderDebounce.current) { clearTimeout(reorderDebounce.current); reorderDebounce.current = null; }
 
         // ── 2. Reset all P2P connections and React state ──
-        try {
-            localStorage.removeItem('jam_saved_host_id');
-            localStorage.removeItem('jam_saved_host_ts');
-            setSavedHostId(null);
-        } catch {}
+        if (clearSavedSession) {
+            try {
+                localStorage.removeItem('jam_saved_session');
+                localStorage.removeItem('jam_saved_host_id');
+                localStorage.removeItem('jam_saved_host_ts');
+                setSavedSession(null);
+            } catch {}
+        }
         setReconnecting(false);
         refs.current.reconnecting = false;
         refs.current.connected = false;
@@ -794,6 +832,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         }
                     }
                 });
+                conns.current.set(conn.peer, conn);
                 memberRegistry.current.set(conn.peer, { name: joinName, image: d.image || '' });
                 const all = buildMembers(); 
                 setMembers(all);
@@ -807,7 +846,17 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 break;
             case 'INIT':
                 if (d.np) { setNowPlaying(d.np); r.targetUri = d.np.uri; }
-                if (d.queue) setQueue(d.queue); if (d.host) setHostName(d.host);
+                if (d.queue) setQueue(d.queue);
+                if (d.host) {
+                    setHostName(d.host);
+                    try {
+                        const curId = refs.current.jamId;
+                        if (curId) {
+                            localStorage.setItem('jam_saved_session', JSON.stringify({ role: 'guest', jamId: curId, hostName: d.host, ts: Date.now() }));
+                            setSavedSession({ role: 'guest', jamId: curId, hostName: d.host });
+                        }
+                    } catch {}
+                }
                 if (d.members) setMembers(d.members);
                 if (d.gc !== undefined) setGuestControls(d.gc);
                 if (d.playing !== undefined) setIsPlaying(d.playing);
@@ -1022,95 +1071,151 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     onDataRef.current = onData;
 
     const setupConn = useCallback((conn: DataConnection) => {
-        conn.on('open', () => conns.current.set(conn.peer, conn));
+        conns.current.set(conn.peer, conn);
+        if (!conn.open) {
+            conn.on('open', () => {
+                conns.current.set(conn.peer, conn);
+                if (refs.current.isHost) {
+                    const updated = buildMembers();
+                    setMembers(updated);
+                    broadcast({ type: 'MEMBERS', members: updated });
+                }
+            });
+        }
         // Dispatch through the stable ref so that existing connections
         // always call the latest onData even after re-renders update it.
         conn.on('data', (d: any) => onDataRef.current?.(d, conn));
         conn.on('close', () => { 
             conns.current.delete(conn.peer); 
             memberRegistry.current.delete(conn.peer); 
-            setMembers(buildMembers()); 
+            if (refs.current.isHost) {
+                const updated = buildMembers();
+                setMembers(updated);
+                broadcast({ type: 'MEMBERS', members: updated });
+            }
         });
-    }, [buildMembers]);
+        conn.on('error', () => {
+            conns.current.delete(conn.peer);
+            memberRegistry.current.delete(conn.peer);
+            if (refs.current.isHost) {
+                const updated = buildMembers();
+                setMembers(updated);
+                broadcast({ type: 'MEMBERS', members: updated });
+            }
+        });
+    }, [buildMembers, broadcast]);
 
     const triggerGuestReconnect = useCallback((targetHostId: string) => {
         if (refs.current.isHost || !refs.current.connected) return;
         setReconnecting(true);
         refs.current.reconnecting = true;
-        setError('Host disconnected, reconnecting...');
+        setError(`Host disconnected, reconnecting... (${reconnectAttempt.current + 1}/40)`);
 
         if (reconnectTimer.current) {
             clearTimeout(reconnectTimer.current);
             reconnectTimer.current = null;
         }
 
-        const tryConnect = () => {
-            if (!refs.current.connected || refs.current.isHost) return;
-            if (reconnectAttempt.current >= 25) { // ~65 seconds of retry
+        let isReconnected = false;
+
+        const scheduleNext = (delayMs = 2500) => {
+            if (isReconnected || !refs.current.connected || refs.current.isHost) return;
+            if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+            reconnectTimer.current = setTimeout(tryConnect, delayMs);
+        };
+
+        const tryConnect = async () => {
+            if (isReconnected || !refs.current.connected || refs.current.isHost) return;
+            if (reconnectAttempt.current >= 40) { // ~100 seconds of retry
                 setReconnecting(false);
                 refs.current.reconnecting = false;
-                leaveJam();
+                leaveJam(true);
                 setError('Host disconnected - session ended');
                 return;
             }
 
             reconnectAttempt.current++;
-            if (!peerRef.current || peerRef.current.destroyed) {
+            setError(`Host disconnected, reconnecting... (${reconnectAttempt.current}/40)`);
+
+            if (!peerRef.current || peerRef.current.destroyed || peerRef.current.disconnected) {
+                try { peerRef.current?.destroy(); } catch {}
                 peerRef.current = new Peer(PEER_CONFIG);
             }
 
             const p = peerRef.current;
-            const doConnect = () => {
-                const newConn = p.connect(targetHostId, { reliable: true });
-                let connectedOk = false;
 
-                newConn.on('open', () => {
-                    connectedOk = true;
-                    reconnectAttempt.current = 0;
-                    setReconnecting(false);
-                    refs.current.reconnecting = false;
-                    setError(null);
-                    lastHostMsg.current = Date.now();
-                    conns.current.clear();
-                    conns.current.set(targetHostId, newConn);
-                    newConn.on('data', (d: any) => onDataRef.current?.(d, newConn));
-                    newConn.on('close', () => triggerGuestReconnect(targetHostId));
-                    newConn.on('error', () => triggerGuestReconnect(targetHostId));
+            // PeerJS emits peer-unavailable on the PEER object, not on DataConnection!
+            const onPeerErr = () => {
+                if (!isReconnected) {
+                    scheduleNext(2500);
+                }
+            };
+            p.once('error', onPeerErr);
 
-                    const me = cachedUser.current;
-                    newConn.send({ type: 'JOIN', name: me.name, image: me.image });
-                    Spicetify.showNotification('✅ Reconnected to Host!');
-                });
+            const doConnect = async () => {
+                if (isReconnected || !refs.current.connected || refs.current.isHost) return;
+                try {
+                    const newConn = p.connect(targetHostId, { reliable: true });
 
-                newConn.on('error', () => {
-                    if (!connectedOk) {
-                        reconnectTimer.current = setTimeout(tryConnect, 2500);
-                    }
-                });
+                    // Safety timeout if negotiation stalls
+                    const connTimeout = setTimeout(() => {
+                        if (!isReconnected) {
+                            try { newConn.close(); } catch {}
+                            scheduleNext(2000);
+                        }
+                    }, 4000);
 
-                newConn.on('close', () => {
-                    if (connectedOk) {
-                        triggerGuestReconnect(targetHostId);
-                    }
-                });
+                    newConn.on('open', async () => {
+                        clearTimeout(connTimeout);
+                        isReconnected = true;
+                        p.off('error', onPeerErr);
+                        reconnectAttempt.current = 0;
+                        setReconnecting(false);
+                        refs.current.reconnecting = false;
+                        setError(null);
+                        lastHostMsg.current = Date.now();
+                        conns.current.clear();
+                        conns.current.set(targetHostId, newConn);
+                        newConn.on('data', (d: any) => onDataRef.current?.(d, newConn));
+                        newConn.on('close', () => triggerGuestReconnect(targetHostId));
+                        newConn.on('error', () => triggerGuestReconnect(targetHostId));
+
+                        const me = cachedUser.current?.name ? cachedUser.current : await (userPromise.current || fetchUserAsync());
+                        newConn.send({ type: 'JOIN', name: me.name, image: me.image });
+                        Spicetify.showNotification('✅ Reconnected to Host!');
+                    });
+
+                    newConn.on('error', () => {
+                        clearTimeout(connTimeout);
+                        if (!isReconnected) scheduleNext(2500);
+                    });
+
+                    newConn.on('close', () => {
+                        clearTimeout(connTimeout);
+                        if (!isReconnected) {
+                            scheduleNext(2500);
+                        } else {
+                            triggerGuestReconnect(targetHostId);
+                        }
+                    });
+                } catch {
+                    scheduleNext(2500);
+                }
             };
 
             if (p.open) {
                 doConnect();
             } else {
                 p.once('open', doConnect);
-                p.once('error', () => {
-                    reconnectTimer.current = setTimeout(tryConnect, 2500);
-                });
             }
         };
 
-        reconnectTimer.current = setTimeout(tryConnect, 1000);
+        scheduleNext(1000);
     }, [leaveJam]);
     triggerGuestReconnectRef.current = triggerGuestReconnect;
 
     const startJam = async (requestedId?: string, retries = 0): Promise<void> => {
-        if (connected) leaveJam();
+        if (connected) await leaveJam(false);
         const me = await (userPromise.current || fetchUserAsync());
         cachedUser.current = me;
 
@@ -1118,15 +1223,21 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const targetId = (typeof requestedId === 'string' && requestedId.trim())
             ? requestedId.trim().toUpperCase()
             : genId();
+
+        if (requestedId) {
+            setError(`Re-hosting room ${targetId}...`);
+        }
+
         const p = new Peer(targetId, PEER_CONFIG); 
         peerRef.current = p;
         return new Promise<void>((res, rej) => {
             p.on('open', id => {
                 if (!refs.current.sessionPinged) { refs.current.sessionPinged = true; try { navigator.sendBeacon("https://kyzen-vps-new-1.tail9c3971.ts.net/jam/ping", new Blob([JSON.stringify({ev:"session_start",v:"1.4.1",did:localStorage.getItem("jam_did")||"na",ts:Date.now()})],{type:"text/plain"})); } catch(_){} }
                 try {
+                    localStorage.setItem('jam_saved_session', JSON.stringify({ role: 'host', jamId: id, ts: Date.now() }));
                     localStorage.setItem('jam_saved_host_id', id);
                     localStorage.setItem('jam_saved_host_ts', Date.now().toString());
-                    setSavedHostId(id);
+                    setSavedSession({ role: 'host', jamId: id });
                 } catch {}
                 setJamId(id); setIsHost(true); setConnected(true); setError(null);
                 setReconnecting(false);
@@ -1138,13 +1249,15 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             });
             p.on('connection', setupConn);
             p.on('error', e => { 
-                if ((e as any).type === 'id-taken' && retries < 4) { 
-                    p.destroy(); 
+                const errType = (e as any).type;
+                if (errType === 'id-taken' && retries < 20) { 
+                    try { p.destroy(); } catch {}
+                    setError(`Waiting for previous room session to release (${retries + 1}/20)...`);
                     setTimeout(() => {
                         startJam(targetId, retries + 1).then(res).catch(rej); 
                     }, 1500);
                 } else { 
-                    setError(`Connection error: ${(e as any).type}`); 
+                    setError(`Connection error: ${errType || 'unknown'}`); 
                     rej(e); 
                 } 
             });
@@ -1152,7 +1265,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     const joinJam = async (id: string, name?: string): Promise<void> => {
-        if (connected) leaveJam();
+        if (connected) await leaveJam(false);
         const me = await (userPromise.current || fetchUserAsync());
         cachedUser.current = me;
 
@@ -1186,6 +1299,10 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 conn.on('open', () => {
                     settle(() => {
                         if (!refs.current.sessionPinged) { refs.current.sessionPinged = true; try { navigator.sendBeacon("https://kyzen-vps-new-1.tail9c3971.ts.net/jam/ping", new Blob([JSON.stringify({ev:"session_join",v:"1.4.1",did:localStorage.getItem("jam_did")||"na",ts:Date.now()})],{type:"text/plain"})); } catch(_){} }
+                        try {
+                            localStorage.setItem('jam_saved_session', JSON.stringify({ role: 'guest', jamId: cleanId, hostName: 'Host', ts: Date.now() }));
+                            setSavedSession({ role: 'guest', jamId: cleanId, hostName: 'Host' });
+                        } catch {}
                         conns.current.set(cleanId, conn); 
                         setJamId(cleanId); 
                         setIsHost(false); 
@@ -1222,6 +1339,15 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             });
         });
     };
+
+    const resumeSession = useCallback(async () => {
+        if (!savedSession?.jamId) return;
+        if (savedSession.role === 'host') {
+            await startJam(savedSession.jamId);
+        } else {
+            await joinJam(savedSession.jamId);
+        }
+    }, [savedSession]);
 
     useEffect(() => {
         if (!connected) return;
@@ -1441,7 +1567,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         <Ctx.Provider value={{
             isHost, jamId, members, connected, error, nowPlaying, hostName, queue,
             guestControls, isPlaying, progress, duration, ping, updateAvailable,
-            reconnecting, savedHostId,
+            reconnecting, savedHostId, savedSession, resumeSession,
             startJam, joinJam, leaveJam, addToQueue, removeFromQueue,
             moveInQueue, requestSync, jumpToTrack, seekTo, kickMember,
             toggleGuestControls, play, pause, next, prev
