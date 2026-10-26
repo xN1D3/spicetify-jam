@@ -1,7 +1,7 @@
 <div align="center">
   <img src="https://capsule-render.vercel.app/api?type=waving&color=1db954&height=120&section=header&animation=fadeIn" width="100%" alt="header wave" />
   <br />
-  <img src="https://raw.githubusercontent.com/Kyzenkms/spicetify-jam/main/assets/logo.png" alt="Spicetify Jam Logo" width="220" />
+  <img src="https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/assets/logo.png" alt="Spicetify Jam Logo" width="220" />
 
   <br /><br />
 
@@ -9,14 +9,14 @@
 
   <br /><br />
 
-  <a href="https://github.com/Kyzenkms/spicetify-jam/releases">
+  <a href="https://github.com/xN1D3/spicetify-jam/releases">
     <img src="https://img.shields.io/badge/version-1.4.1-1db954?style=flat-square&logo=spotify&logoColor=white" alt="Version" />
   </a>
   <a href="https://spicetify.app">
     <img src="https://img.shields.io/badge/built%20for-spicetify-1db954?style=flat-square" alt="Spicetify" />
   </a>
-  <a href="https://github.com/Kyzenkms/spicetify-jam/stargazers">
-    <img src="https://img.shields.io/github/stars/Kyzenkms/spicetify-jam?style=flat-square&logo=github&color=1db954" alt="GitHub Stars" />
+  <a href="https://github.com/xN1D3/spicetify-jam/stargazers">
+    <img src="https://img.shields.io/github/stars/xN1D3/spicetify-jam?style=flat-square&logo=github&color=1db954" alt="GitHub Stars" />
   </a>
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-MIT-444?style=flat-square" alt="License" />
@@ -62,12 +62,12 @@ Just run this. It downloads the latest build and sets everything up automaticall
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/Kyzenkms/spicetify-jam/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/install.ps1 | iex
 ```
 
 **Linux / macOS:**
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Kyzenkms/spicetify-jam/main/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/install.sh)
 ```
 
 That's it. Restart Spotify and look for the Jam icon `((•))` in the player bar.
@@ -83,7 +83,7 @@ That's it. Restart Spotify and look for the Jam icon `((•))` in the player bar
 **Windows**
 
 ```powershell
-git clone https://github.com/Kyzenkms/spicetify-jam
+git clone https://github.com/xN1D3/spicetify-jam
 cd spicetify-jam
 npm install
 npm run build
@@ -94,7 +94,7 @@ spicetify apply
 **Linux / macOS**
 
 ```bash
-git clone https://github.com/Kyzenkms/spicetify-jam
+git clone https://github.com/xN1D3/spicetify-jam
 cd spicetify-jam
 npm install
 npm run build
@@ -140,12 +140,12 @@ spicetify apply
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/Kyzenkms/spicetify-jam/main/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/uninstall.ps1 | iex
 ```
 
 **Linux / macOS:**
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/Kyzenkms/spicetify-jam/main/uninstall.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/uninstall.sh)
 ```
 
 ---
@@ -190,7 +190,7 @@ Install [Node.js](https://nodejs.org/) and [Git](https://git-scm.com/downloads),
 
 ## Contributing
 
-Found a bug or have a suggestion? [Open an issue](https://github.com/Kyzenkms/spicetify-jam/issues) — contributions are welcome.
+Found a bug or have a suggestion? [Open an issue](https://github.com/xN1D3/spicetify-jam/issues) — contributions are welcome.
 
 ## License
 

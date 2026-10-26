@@ -172,7 +172,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 <div className="jam-body">
                     {j.updateAvailable && (
                         <div className="jam-error" style={{ background: 'rgba(29,185,84,0.08)', borderColor: 'rgba(29,185,84,0.2)', color: '#1db954', cursor: 'pointer' }}
-                            onClick={() => window.open('https://github.com/Kyzenkms/spicetify-jam', '_blank')}>
+                            onClick={() => window.open('https://github.com/xN1D3/spicetify-jam', '_blank')}>
                             <span>✨</span>
                             <span style={{ fontSize: '12px', fontWeight: 700 }}>✨ Update Available — tap to update app</span>
                         </div>
@@ -182,14 +182,25 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         <h2 className="jam-hero-title">Host a Listening Session</h2>
                         <p className="jam-hero-desc">Sync Spotify playback with friends in real‑time via P2P — no accounts needed.</p>
                     </div>
-                    <button className="jam-btn green full" onClick={j.startJam}>Start a new Jam</button>
+                    {j.savedHostId && (
+                        <button
+                            className="jam-btn green full"
+                            style={{ marginBottom: 8, background: 'linear-gradient(135deg, #1db954, #1ed760)', color: '#000', fontWeight: 700 }}
+                            onClick={() => j.startJam(j.savedHostId!)}
+                        >
+                            🔄 เข้าห้องเดิม / Resume ({j.savedHostId})
+                        </button>
+                    )}
+                    <button className={`jam-btn ${j.savedHostId ? 'outline' : 'green'} full`} onClick={() => j.startJam()}>
+                        Start a new Jam
+                    </button>
                     <div className="jam-divider"><div className="jam-divider-line"/><span>or join one</span><div className="jam-divider-line"/></div>
                     <input className="jam-input" placeholder="Paste Jam ID or join link…" value={joinInput}
                         onChange={e => setJoinInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && j.joinJam(joinInput)} spellCheck={false}/>
                     <button className="jam-btn outline full" style={{marginTop:4}} onClick={() => j.joinJam(joinInput)}>Join Session</button>
                     {j.error && <div className="jam-error">{I.warn} {j.error}</div>}
                     <div style={{ textAlign: 'center', marginTop: 8, fontSize: 11, color: 'rgba(255,255,255,0.25)' }}>
-                        Enjoying Jam? <a href="https://github.com/Kyzenkms/spicetify-jam" target="_blank" style={{ color: '#1db954', textDecoration: 'none' }}>⭐ Star us on GitHub</a>
+                        Enjoying Jam? <a href="https://github.com/xN1D3/spicetify-jam" target="_blank" style={{ color: '#1db954', textDecoration: 'none' }}>⭐ Star us on GitHub</a>
                     </div>
                 </div>
             </div>
@@ -222,15 +233,15 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <div className="jam-body scrollable">
                 {j.updateAvailable && (
                     <div className="jam-error" style={{ background: 'rgba(29,185,84,0.08)', borderColor: 'rgba(29,185,84,0.2)', color: '#1db954', cursor: 'pointer' }}
-                        onClick={() => window.open('https://github.com/Kyzenkms/spicetify-jam', '_blank')}>
+                        onClick={() => window.open('https://github.com/xN1D3/spicetify-jam', '_blank')}>
                         <span>✨</span>
                         <span style={{ fontSize: '12px', fontWeight: 700 }}>✨ Update Available — tap to update app</span>
                     </div>
                 )}
 
-                <div className="jam-live-badge">
+                <div className={`jam-live-badge${j.reconnecting ? ' disconnected' : ''}`}>
                     <span className="jam-live-dot"/>
-                    <span>Session Active</span>
+                    <span>{j.reconnecting ? 'Host disconnected, reconnecting...' : 'Session Active'}</span>
                     <span className="jam-badge">{j.isHost ? 'HOST' : 'GUEST'}</span>
                 </div>
 

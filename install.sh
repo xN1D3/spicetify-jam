@@ -2,7 +2,7 @@
 set -e
 
 EXTENSION_NAME="spicetify-jam.js"
-EXTENSION_URL="https://raw.githubusercontent.com/Kyzenkms/spicetify-jam/main/dist/${EXTENSION_NAME}"
+EXTENSION_URL="https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/dist/${EXTENSION_NAME}"
 
 echo "🎵 Installing Spicetify Jam..."
 

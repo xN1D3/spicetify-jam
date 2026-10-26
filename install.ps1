@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $ExtensionName = "spicetify-jam.js"
-$ExtensionUrl = "https://raw.githubusercontent.com/Kyzenkms/spicetify-jam/main/dist/$ExtensionName"
+$ExtensionUrl = "https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/dist/$ExtensionName"
 
 Write-Host "🎵 Installing Spicetify Jam..." -ForegroundColor Green
 

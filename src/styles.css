@@ -282,11 +282,21 @@
     border-radius: 9px;
     font-size: 11px; font-weight: 600;
     flex-shrink: 0;
+    transition: all 0.25s ease;
+}
+.jam-live-badge.disconnected {
+    background: rgba(226, 33, 52, 0.12);
+    border-color: rgba(226, 33, 52, 0.35);
+    color: #ff5c5c;
 }
 .jam-live-dot {
     width: 6px; height: 6px; border-radius: 50%;
     background: #1db954; flex-shrink: 0;
     animation: live-blink 1.6s ease-in-out infinite;
+}
+.jam-live-badge.disconnected .jam-live-dot {
+    background: #ff5c5c;
+    box-shadow: 0 0 6px #ff5c5c;
 }
 @keyframes live-blink {
     0%,100% { opacity: 1; } 50% { opacity: 0.25; }
@@ -297,6 +307,11 @@
     color: #000;
     font-size: 8px; font-weight: 900; letter-spacing: 0.9px;
     padding: 2px 8px; border-radius: 10px; text-transform: uppercase;
+    transition: all 0.25s ease;
+}
+.jam-live-badge.disconnected .jam-badge {
+    background: linear-gradient(135deg, #e22134, #ff5c5c);
+    color: #fff;
 }
 
 /* ── Now Playing card ──────────────────────── */
