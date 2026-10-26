@@ -194,7 +194,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             style={{ marginBottom: 8, background: 'linear-gradient(135deg, #1db954, #1ed760)', color: '#000', fontWeight: 700 }}
                             onClick={() => j.resumeSession()}
                         >
-                            🔄 เข้าห้องเดิม / Resume ({j.savedSession.jamId}) {j.savedSession.role === 'host' ? '(Host)' : `(With ${j.savedSession.hostName || 'Host'})`}
+                            🔄 {j.savedSession.role === 'host' ? `Resume Session (${j.savedSession.jamId}) · Host` : `Rejoin Session (${j.savedSession.jamId}) · With ${j.savedSession.hostName || 'Host'}`}
                         </button>
                     )}
                     <button className={`jam-btn ${j.savedSession ? 'outline' : 'green'} full`} onClick={() => j.startJam()}>
@@ -313,7 +313,23 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                     </div>
                                     <div className="jam-member-info">
                                         <div className="jam-member-name">{m.name || 'Listener'}</div>
-                                        <div className="jam-member-role">{m.isHost ? '● Host' : '○ Listener'}</div>
+                                        {(() => {
+                                            const isHostMember = !!m.isHost;
+                                            const isDisconnected = isHostMember
+                                                ? (!j.isHost && j.reconnecting)
+                                                : (m.status === 'reconnecting' || m.status === 'disconnected');
+
+                                            return (
+                                                <div className={`jam-member-status ${isDisconnected ? 'disconnected' : 'active'}`}>
+                                                    <span className={`jam-status-dot ${isDisconnected ? 'disconnected' : 'active'}`} />
+                                                    <span>
+                                                        {isHostMember
+                                                            ? (isDisconnected ? 'Host · Reconnecting...' : 'Host · Active')
+                                                            : (isDisconnected ? 'Listener · Reconnecting...' : 'Listener · Connected')}
+                                                    </span>
+                                                </div>
+                                            );
+                                        })()}
                                     </div>
                                     {j.isHost && !m.isHost && (
                                         <button className="jam-icon-btn red" onClick={() => j.kickMember(m.id)}>{I.kick}</button>

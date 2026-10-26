@@ -501,6 +501,36 @@
 .jam-member-info    { flex: 1; min-width: 0; }
 .jam-member-name    { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .jam-member-role    { font-size: 10px; color: rgba(255,255,255,0.3); margin-top: 1px; }
+.jam-member-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-top: 2px;
+}
+.jam-member-status.active {
+    color: #1db954;
+}
+.jam-member-status.disconnected {
+    color: #ff5c5c;
+}
+.jam-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.jam-status-dot.active {
+    background: #1db954;
+    box-shadow: 0 0 6px rgba(29, 185, 84, 0.7);
+    animation: live-blink 1.6s ease-in-out infinite;
+}
+.jam-status-dot.disconnected {
+    background: #ff5c5c;
+    box-shadow: 0 0 6px rgba(255, 92, 92, 0.8);
+    animation: live-blink 1s ease-in-out infinite;
+}
 
 /* ── Collapsible listeners section ─────────── */
 /* Override section-title to be a full-width button when used as a toggle */
