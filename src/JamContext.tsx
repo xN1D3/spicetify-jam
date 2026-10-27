@@ -326,40 +326,21 @@ const getQueue = async (): Promise<TrackInfo[]> => {
     try {
         let tracks: any[] = [];
 
-        // 1. Try Platform API (best for comprehensive manual + auto/context queue)
+        // 1. Try Platform API (best for manual queue tracks)
         try {
             const res = await (Spicetify as any).Platform?.PlayerAPI?.getQueue();
-            if (res) {
-                const queued = (res.queued || []).map((t: any) => extractTrack(t, true));
-                const queuedUris = new Set(queued.map((t: any) => t.uri).filter(Boolean));
-                const autoplayRaw = res.nextUp || res.autoplay || res.context || res.nextTracks || [];
-                const autoplay = autoplayRaw
-                    .map((t: any) => extractTrack(t, false))
-                    .filter((t: TrackInfo) => t.uri && !queuedUris.has(t.uri));
-                
-                // Combine manual queue and non-duplicate auto queue
-                if (queued.length > 0 || autoplay.length > 0) {
-                    tracks = [...queued, ...autoplay];
-                }
+            if (res && Array.isArray(res.queued)) {
+                tracks = res.queued.map((t: any) => extractTrack(t, true));
             }
         } catch {}
 
-        // 2. Try Player data as fallback
-        if (!tracks || tracks.length === 0) {
-            if (Spicetify.Player?.data?.next_tracks) {
-                tracks = (Spicetify.Player.data.next_tracks || []).map((t: any) => extractTrack(t, false));
-            }
-        }
-
-        // 3. Last resort fallbacks
-        if (!tracks || tracks.length === 0) {
-            tracks = (Spicetify.Queue?.nextTracks || []).map((t: any) => extractTrack(t, false));
-        }
-
+        // 2. Try CosmosAsync queue as fallback for manual queue
         if (!tracks || tracks.length === 0) {
             try {
                 const res = await (Spicetify as any).CosmosAsync.get('sp://player/v2/main/queue');
-                tracks = (res?.next_tracks || res?.tracks || []).map((t: any) => extractTrack(t, false));
+                if (res && Array.isArray(res.queued)) {
+                    tracks = res.queued.map((t: any) => extractTrack(t, true));
+                }
             } catch {}
         }
 
@@ -425,7 +406,7 @@ const rewriteNativeQueue = async (tracks: TrackInfo[]) => {
     }
     for (const t of uniqueTracks) {
         if (!t.uri) continue;
-        try { await Spicetify.removeFromQueue([{ uri: t.uri, uid: t.uid } as any]); } catch {}
+        try { await Spicetify.removeFromQueue([{ uri: t.uri, ...(t.uid ? { uid: t.uid } : {}) } as any]); } catch {}
     }
     for (const t of uniqueTracks) {
         if (!t.uri) continue;
@@ -918,9 +899,6 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const removeFromQueue = useCallback(async (uri: string, uid?: string) => {
         if (refs.current.isHost) {
-            // Context tracks can't be removed from Spotify's native queue — the
-            // call no-ops and the next refresh would resurrect them. Blocklist
-            // the uri so refreshes filter it and songchange skips it.
             removedUris.current.add(uri);
             addedByMap.current.delete(uri); // clear attribution when removed
             const newQueue = queueRef.current.filter(t => t.uri !== uri);
@@ -928,7 +906,30 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setQueue(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
             if (!uri.startsWith('jam:fake:')) {
-                try { await Spicetify.removeFromQueue([{ uri, uid } as any]); } catch {}
+                try {
+                    const qRes = await (Spicetify as any).Platform?.PlayerAPI?.getQueue?.();
+                    const matched = (qRes?.queued || []).filter((q: any) => 
+                        q.uri === uri || q.track?.uri === uri || q.contextTrack?.uri === uri
+                    );
+                    if (matched.length > 0) {
+                        const payload = matched.map((m: any) => ({
+                            uri: m.uri || uri,
+                            ...(m.uid ? { uid: m.uid } : (uid ? { uid } : {}))
+                        }));
+                        await Spicetify.removeFromQueue(payload as any);
+                        if ((Spicetify as any).Platform?.PlayerAPI?.removeFromQueue) {
+                            try { await (Spicetify as any).Platform.PlayerAPI.removeFromQueue(payload); } catch {}
+                        }
+                    } else {
+                        const payload = uid ? [{ uri, uid }] : [{ uri }];
+                        await Spicetify.removeFromQueue(payload as any);
+                        if ((Spicetify as any).Platform?.PlayerAPI?.removeFromQueue) {
+                            try { await (Spicetify as any).Platform.PlayerAPI.removeFromQueue(payload); } catch {}
+                        }
+                    }
+                } catch {
+                    try { await Spicetify.removeFromQueue([{ uri }] as any); } catch {}
+                }
             }
             queueUserOrdered.current = 0;
             setTimeout(refreshQueue, 500);
@@ -1149,12 +1150,27 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const jamQueue = [...queueRef.current];
         if (jamQueue.length > 0) {
             try {
-                // Single call with all tracks at once — much faster than looping
                 await Spicetify.removeFromQueue(
-                    jamQueue.map(t => ({ uri: t.uri, uid: t.uid } as any))
+                    jamQueue.map(t => ({ uri: t.uri, ...(t.uid ? { uid: t.uid } : {}) } as any))
                 );
             } catch {}
         }
+        try {
+            const qRes = await (Spicetify as any).Platform?.PlayerAPI?.getQueue?.();
+            const queuedList = qRes?.queued || [];
+            if (queuedList.length > 0) {
+                const toRemove = queuedList.map((t: any) => ({
+                    uri: t.uri || t.track?.uri || t.contextTrack?.uri,
+                    ...(t.uid ? { uid: t.uid } : {})
+                })).filter((t: any) => Boolean(t.uri));
+                if (toRemove.length > 0) {
+                    await Spicetify.removeFromQueue(toRemove as any);
+                    if ((Spicetify as any).Platform?.PlayerAPI?.removeFromQueue) {
+                        try { await (Spicetify as any).Platform.PlayerAPI.removeFromQueue(toRemove); } catch {}
+                    }
+                }
+            }
+        } catch {}
 
         // Cancel any pending debounced reorder sync
         if (reorderDebounce.current) { clearTimeout(reorderDebounce.current); reorderDebounce.current = null; }
@@ -1774,13 +1790,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 setReconnecting(false);
                 setHostName(me.name); setMembers([{ id: 'host', name: me.name, image: me.image, isHost: true, status: 'active' }]);
                 const t = getTrack(); if (t) { setNowPlaying(t); refs.current.targetUri = t.uri || null; }
-                if (!requestedId) {
-                    setQueue([]);
-                    queueRef.current = [];
-                    addedByMap.current.clear();
-                    removedUris.current.clear();
-                    recentlyAddedUris.current.clear();
-                }
+                setQueue([]);
+                queueRef.current = [];
+                addedByMap.current.clear();
+                removedUris.current.clear();
+                recentlyAddedUris.current.clear();
                 setIsPlaying(Spicetify.Player.isPlaying()); setProgress(Spicetify.Player.getProgress()); setDuration(Spicetify.Player.getDuration());
                 setTimeout(refreshQueue, 500); res();
             });
