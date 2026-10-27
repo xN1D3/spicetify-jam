@@ -562,37 +562,81 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             image: cachedUser.current.image || ''
         };
 
-        const spotifyMap = new Map<string, TrackInfo>();
-        spotifyQueue.forEach(t => {
-            if (t.uri) {
-                let by = addedByMap.current.get(t.uri);
-                if (!by && t.isManual && (hostUser.name || hostUser.image)) {
-                    by = hostUser;
-                    addedByMap.current.set(t.uri, hostUser);
+        const enrichedSpotify: TrackInfo[] = spotifyQueue.map(t => {
+            if (!t.uri) return t;
+            let by = addedByMap.current.get(t.uri);
+            if (!by && t.isManual && (hostUser.name || hostUser.image)) {
+                by = hostUser;
+                addedByMap.current.set(t.uri, hostUser);
+            }
+            return by ? { ...t, addedBy: by } : t;
+        });
+
+        // Anchor-based merge: preserve exact positions of fake/custom tracks relative to surrounding real tracks
+        const customTracksWithContext: {
+            track: TrackInfo;
+            prevUri: string | null;
+            nextUri: string | null;
+        }[] = [];
+
+        for (let i = 0; i < currentQueue.length; i++) {
+            const item = currentQueue[i];
+            if (item.isCustom || item.uri?.startsWith('jam:fake:')) {
+                let prevUri: string | null = null;
+                for (let j = i - 1; j >= 0; j--) {
+                    if (!currentQueue[j].isCustom && !currentQueue[j].uri?.startsWith('jam:fake:')) {
+                        prevUri = currentQueue[j].uri || null;
+                        break;
+                    }
                 }
-                spotifyMap.set(t.uri, by ? { ...t, addedBy: by } : t);
+                let nextUri: string | null = null;
+                for (let j = i + 1; j < currentQueue.length; j++) {
+                    if (!currentQueue[j].isCustom && !currentQueue[j].uri?.startsWith('jam:fake:')) {
+                        nextUri = currentQueue[j].uri || null;
+                        break;
+                    }
+                }
+                customTracksWithContext.push({ track: item, prevUri, nextUri });
             }
-        });
+        }
 
-        const mergedQueue: TrackInfo[] = [];
-        const seenSpotifyUris = new Set<string>();
-
-        currentQueue.forEach(t => {
-            if (t.isCustom || t.uri?.startsWith('jam:fake:')) {
-                mergedQueue.push(t);
-            } else if (t.uri && spotifyMap.has(t.uri)) {
-                mergedQueue.push(spotifyMap.get(t.uri)!);
-                seenSpotifyUris.add(t.uri);
+        let mergedQueue: TrackInfo[];
+        if (customTracksWithContext.length === 0) {
+            mergedQueue = enrichedSpotify;
+        } else {
+            mergedQueue = [...enrichedSpotify];
+            for (const { track, prevUri, nextUri } of customTracksWithContext) {
+                let inserted = false;
+                if (prevUri) {
+                    const prevIdx = mergedQueue.findIndex(t => t.uri === prevUri);
+                    if (prevIdx !== -1) {
+                        let insertAt = prevIdx + 1;
+                        while (insertAt < mergedQueue.length && (mergedQueue[insertAt].isCustom || mergedQueue[insertAt].uri?.startsWith('jam:fake:'))) {
+                            insertAt++;
+                        }
+                        mergedQueue.splice(insertAt, 0, track);
+                        inserted = true;
+                    }
+                }
+                if (!inserted && nextUri) {
+                    const nextIdx = mergedQueue.findIndex(t => t.uri === nextUri);
+                    if (nextIdx !== -1) {
+                        mergedQueue.splice(nextIdx, 0, track);
+                        inserted = true;
+                    }
+                }
+                if (!inserted) {
+                    if (!prevUri) {
+                        mergedQueue.unshift(track);
+                    } else {
+                        mergedQueue.push(track);
+                    }
+                }
             }
-        });
-
-        spotifyQueue.forEach(t => {
-            if (t.uri && !seenSpotifyUris.has(t.uri)) {
-                mergedQueue.push(spotifyMap.get(t.uri) || t);
-            }
-        });
+        }
 
         if (JSON.stringify(mergedQueue.map(t => t.uri)) !== JSON.stringify(currentQueue.map(t => t.uri))) {
+            queueRef.current = mergedQueue;
             setQueue(mergedQueue);
             broadcast({ type: 'Q', queue: mergedQueue });
         }
@@ -650,6 +694,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             removedUris.current.add(uri);
             addedByMap.current.delete(uri); // clear attribution when removed
             const newQueue = queueRef.current.filter(t => t.uri !== uri);
+            queueRef.current = newQueue;
             setQueue(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
             if (!uri.startsWith('jam:fake:')) {
@@ -689,6 +734,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (refs.current.isHost) {
             const updated = [...queueRef.current, fakeTrack];
+            queueRef.current = updated;
             setQueue(updated);
             broadcast({ type: 'Q', queue: updated });
             queueUserOrdered.current = Date.now();
@@ -751,13 +797,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
         if (refs.current.isHost) {
             refs.current.targetUri = uri;
-            const idx = queueRef.current.findIndex(t => t.uri === uri);
-            if (idx >= 0) {
-                pendingQueueRestore.current = queueRef.current.slice(idx + 1);
-                const newQueue = queueRef.current.slice(idx + 1);
-                setQueue(newQueue);
-                broadcast({ type: 'Q', queue: newQueue });
-            }
+            const newQueue = queueRef.current.filter(t => t.uri !== uri);
+            queueRef.current = newQueue;
+            pendingQueueRestore.current = newQueue;
+            setQueue(newQueue);
+            broadcast({ type: 'Q', queue: newQueue });
             // Lock the Jam queue so the 5s refreshQueue doesn't replace it with
             // the standalone track's autoplay/radio before the restore finishes
             queueUserOrdered.current = Date.now();
@@ -815,22 +859,19 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Stable callback — used by host next() AND guest CMD:next on host side
     const playNextInJamQueue = useCallback(() => {
         if (queueRef.current.length > 0) {
-            let currentQ = [...queueRef.current];
-            // Consume any fake tracks at the head of the queue
-            while (currentQ.length > 0 && (currentQ[0].isCustom || currentQ[0].uri?.startsWith('jam:fake:'))) {
-                const fake = currentQ.shift()!;
-                Spicetify.showNotification(`💬 Up Next: "${fake.title}"`);
-            }
-            if (currentQ.length === 0) {
-                setQueue([]);
-                broadcast({ type: 'Q', queue: [] });
+            // Find next real audio track to play
+            const nextTrackIdx = queueRef.current.findIndex(t => !t.isCustom && !t.uri?.startsWith('jam:fake:'));
+            if (nextTrackIdx < 0) {
+                // Only fake tracks in queue — none can be played as audio
                 Spicetify.Player.next();
                 return;
             }
 
-            const nextTrack = currentQ[0];
+            const nextTrack = queueRef.current[nextTrackIdx];
             refs.current.targetUri = nextTrack.uri!;
-            const newQueue = currentQ.slice(1);
+            // Remove this audio track, KEEP all fake tracks and subsequent tracks
+            const newQueue = queueRef.current.filter((_, i) => i !== nextTrackIdx);
+            queueRef.current = newQueue;
             setQueue(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
 
@@ -1025,13 +1066,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 else if (d.a === 'back') Spicetify.Player.back();
                 else if (d.a === 'seek') Spicetify.Player.seek(d.pos);
                 else if (d.a === 'playuri') {
-                    const idx = queueRef.current.findIndex(t => t.uri === d.uri);
-                    if (idx >= 0) {
-                        pendingQueueRestore.current = queueRef.current.slice(idx + 1);
-                        const newQueue = queueRef.current.slice(idx + 1);
-                        setQueue(newQueue);
-                        broadcast({ type: 'Q', queue: newQueue });
-                    }
+                    const newQueue = queueRef.current.filter(t => t.uri !== d.uri);
+                    queueRef.current = newQueue;
+                    pendingQueueRestore.current = newQueue;
+                    setQueue(newQueue);
+                    broadcast({ type: 'Q', queue: newQueue });
                     refs.current.targetUri = d.uri;
                     queueUserOrdered.current = Date.now();
                     Spicetify.Player.playUri(d.uri);
@@ -1198,6 +1237,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         addedBy: guestSender || d.track.addedBy
                     };
                     const updated = [...queueRef.current, trackWithSender];
+                    queueRef.current = updated;
                     setQueue(updated);
                     broadcast({ type: 'Q', queue: updated });
                     queueUserOrdered.current = Date.now();
