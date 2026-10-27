@@ -1233,7 +1233,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 const all = buildMembers(); 
                 setMembers(all);
                 conn.send({
-                    type: 'INIT', np: getTrack(), queue: await getQueue(), host: cachedUser.current.name,
+                    type: 'INIT', np: getTrack(), queue: queueRef.current, host: cachedUser.current.name,
                     gc: r.guestControls, gcreate: r.guestCreateSong, playing: Spicetify.Player.isPlaying(), members: all,
                     progress: Spicetify.Player.getProgress(), duration: Spicetify.Player.getDuration()
                 });
