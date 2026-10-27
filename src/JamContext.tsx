@@ -20,7 +20,7 @@ interface JamState {
     savedSession: LastSessionInfo | null;
     resumeSession: () => Promise<void>;
     startJam: (requestedId?: string) => Promise<void>; joinJam: (id: string, name?: string) => Promise<void>;
-    leaveJam: (clearSavedSession?: boolean) => void; addToQueue: (uri: string, sender?: { name: string; image: string }) => void; removeFromQueue: (uri: string, uid?: string) => void;
+    leaveJam: (clearSavedSession?: boolean) => void; addToQueue: (uri: string | string[], sender?: { name: string; image: string }, preloadedMeta?: TrackInfo) => void; removeFromQueue: (uri: string, uid?: string) => void;
     addCustomTrack: (title: string, artist?: string) => void;
     moveInQueue: (from: number, to: number) => void; requestSync: () => void;
     jumpToTrack: (uri: string) => void; seekTo: (ms: number) => void;
@@ -94,23 +94,54 @@ const fetchUserAsync = async (): Promise<{ name: string; image: string }> => {
     return { name, image };
 };
 
+const trackMetaCache = new Map<string, TrackInfo>();
+
+const getAccessToken = async (): Promise<string | null> => {
+    try {
+        const state = (Spicetify as any).Platform?.AuthorizationAPI?.getState?.();
+        if (state?.token?.accessToken) return state.token.accessToken;
+    } catch {}
+    try {
+        const token = await (Spicetify as any).Platform?.AuthorizationAPI?.getAccessToken?.();
+        if (typeof token === 'string') return token;
+        if (token?.accessToken) return token.accessToken;
+    } catch {}
+    try {
+        const token = await (Spicetify as any).Platform?.Session?.getAccessToken?.();
+        if (typeof token === 'string') return token;
+        if (token?.accessToken) return token.accessToken;
+    } catch {}
+    try {
+        const res = await (Spicetify as any).CosmosAsync?.get?.('sp://identity/v1/token');
+        if (res?.accessToken) return res.accessToken;
+    } catch {}
+    return null;
+};
+
 const getTrack = (): TrackInfo | null => {
     const t = Spicetify.Player.data?.item;
     if (!t) return null;
     const meta = t.metadata || {};
-    return {
+    const res: TrackInfo = {
         title: t.name || meta.title || 'Unknown',
         artist: t.artists?.[0]?.name || meta.artist_name || 'Unknown',
         artUrl: fmtImg(meta.image_xlarge_url || meta.image_large_url || meta.image_url || t.images?.[0]?.url),
         uri: t.uri,
         uid: t.uid
     };
+    if (res.uri && res.title && res.title !== 'Unknown' && res.title !== 'Added Track') {
+        trackMetaCache.set(res.uri, res);
+    }
+    return res;
 };
 
 const extractTrack = (t: any, isManual = false): TrackInfo => {
     if (!t) return { title: '?', artist: '?', artUrl: '', uri: '', uid: '' };
     // If already extracted, return it with isManual preserved
     if (typeof t.title === 'string' && typeof t.artist === 'string' && t.uri) {
+        if (t.title !== '?' && t.title !== 'Added Track') {
+            trackMetaCache.set(t.uri, t);
+        }
         return {
             title: t.title,
             artist: t.artist,
@@ -123,12 +154,172 @@ const extractTrack = (t: any, isManual = false): TrackInfo => {
     }
     const data = t?.contextTrack || t?.track || t || {};
     const meta = data?.metadata || t?.metadata || {};
-    const title = data.name || meta.name || meta.title || t.name || t.title || '?';
-    const artist = (data.artists?.[0]?.name) || meta.artist_name || meta.album_artist || t.artist_name || t.artist || '?';
-    const artUrl = fmtImg(meta.image_xlarge_url || meta.image_large_url || meta.image_url || data.album?.images?.[0]?.url || t.imageUrl || meta.thumbnail_url || t.artUrl);
+    let title = data.name || meta.name || meta.title || t.name || t.title || '?';
+    let artist = (data.artists?.[0]?.name) || meta.artist_name || meta.album_artist || t.artist_name || t.artist || '?';
+    let artUrl = fmtImg(meta.image_xlarge_url || meta.image_large_url || meta.image_url || data.album?.images?.[0]?.url || t.imageUrl || meta.thumbnail_url || t.artUrl);
     const uri = data.uri || t.uri || '';
     const uid = data.uid || t.uid || '';
-    return { title, artist, artUrl, uri, uid, isManual };
+
+    if (uri && (title === '?' || artist === '?') && trackMetaCache.has(uri)) {
+        const cached = trackMetaCache.get(uri)!;
+        if (title === '?' && cached.title && cached.title !== '?') title = cached.title;
+        if (artist === '?' && cached.artist && cached.artist !== '?') artist = cached.artist;
+        if (!artUrl && cached.artUrl) artUrl = cached.artUrl;
+    }
+
+    const res: TrackInfo = { title, artist, artUrl, uri, uid, isManual };
+    if (uri && title !== '?' && title !== 'Added Track') {
+        trackMetaCache.set(uri, res);
+    }
+    return res;
+};
+
+const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
+    if (trackMetaCache.has(uri)) {
+        const cached = trackMetaCache.get(uri)!;
+        if (cached.title && cached.title !== 'Added Track' && cached.title !== '?') {
+            return { ...cached, isManual: true };
+        }
+    }
+
+    const id = uri.replace('spotify:track:', '').split('?')[0];
+
+    // 1. Try Spotify GraphQL decorateContextTracks (Native internal, ultra fast & has full metadata)
+    try {
+        const def = (Spicetify as any).GraphQL?.Definitions?.decorateContextTracks;
+        if (def && (Spicetify as any).GraphQL?.Request) {
+            const gqlRes = await (Spicetify as any).GraphQL.Request(def, { uris: [uri] });
+            const list = Array.isArray(gqlRes)
+                ? gqlRes
+                : (gqlRes?.data?.decorateContextTracks || gqlRes?.data?.tracks || gqlRes?.tracks || []);
+            const allTracks = list.flatMap((item: any) => item?.tracks || (item?.name ? [item] : []));
+            const match = allTracks.find((t: any) => t?.uri === uri);
+            if (match && match.name) {
+                const artists = match.artists?.items?.map((a: any) => a.profile?.name || a.name).filter(Boolean).join(', ') ||
+                                match.artists?.map?.((a: any) => a.name).filter(Boolean).join(', ') ||
+                                'Unknown Artist';
+                const art = fmtImg(match.albumOfTrack?.coverArt?.sources?.[0]?.url || match.album?.images?.[0]?.url);
+                const info: TrackInfo = {
+                    title: match.name,
+                    artist: artists,
+                    artUrl: art,
+                    uri,
+                    uid: '',
+                    isManual: true
+                };
+                trackMetaCache.set(uri, info);
+                return info;
+            }
+        }
+    } catch {}
+
+    // 2. Try Spotify Web API via fetch with Access Token
+    try {
+        const token = await getAccessToken();
+        if (token) {
+            const resp = await fetch(`https://api.spotify.com/v1/tracks/${id}`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data && data.name) {
+                    const info: TrackInfo = {
+                        title: data.name,
+                        artist: data.artists?.map((a: any) => a.name).join(', ') || 'Unknown Artist',
+                        artUrl: fmtImg(data.album?.images?.[0]?.url),
+                        uri,
+                        uid: '',
+                        isManual: true
+                    };
+                    trackMetaCache.set(uri, info);
+                    return info;
+                }
+            }
+        }
+    } catch {}
+
+    // 3. Try CosmosAsync with Spotify Web API
+    try {
+        const res = await (Spicetify as any).CosmosAsync?.get(`https://api.spotify.com/v1/tracks/${id}`);
+        if (res && res.name) {
+            const info: TrackInfo = {
+                title: res.name,
+                artist: res.artists?.map((a: any) => a.name).join(', ') || 'Unknown Artist',
+                artUrl: fmtImg(res.album?.images?.[0]?.url),
+                uri,
+                uid: '',
+                isManual: true
+            };
+            trackMetaCache.set(uri, info);
+            return info;
+        }
+    } catch {}
+
+    // 4. Try Spotify GraphQL getTrackName & queryTrackArtists
+    try {
+        const nameDef = (Spicetify as any).GraphQL?.Definitions?.getTrackName;
+        if (nameDef && (Spicetify as any).GraphQL?.Request) {
+            const nameRes = await (Spicetify as any).GraphQL.Request(nameDef, { uri });
+            const trackUnion = nameRes?.data?.trackUnion;
+            if (trackUnion && trackUnion.name) {
+                let artist = 'Unknown Artist';
+                try {
+                    const artDef = (Spicetify as any).GraphQL?.Definitions?.queryTrackArtists;
+                    if (artDef) {
+                        const artRes = await (Spicetify as any).GraphQL.Request(artDef, { trackUri: uri });
+                        const artList = artRes?.data?.trackUnion?.artists?.items?.map((a: any) => a.profile?.name).filter(Boolean);
+                        if (artList && artList.length > 0) artist = artList.join(', ');
+                    }
+                } catch {}
+                const info: TrackInfo = {
+                    title: trackUnion.name,
+                    artist,
+                    artUrl: '',
+                    uri,
+                    uid: '',
+                    isManual: true
+                };
+                trackMetaCache.set(uri, info);
+                return info;
+            }
+        }
+    } catch {}
+
+    // 5. Try Spotify public oEmbed (Zero auth, 100% reliable fallback)
+    try {
+        const oembedRes = await fetch(`https://open.spotify.com/oembed?url=https://open.spotify.com/track/${id}`);
+        if (oembedRes.ok) {
+            const oembed = await oembedRes.json();
+            if (oembed && oembed.title) {
+                const info: TrackInfo = {
+                    title: oembed.title,
+                    artist: 'Spotify Track',
+                    artUrl: fmtImg(oembed.thumbnail_url),
+                    uri,
+                    uid: '',
+                    isManual: true
+                };
+                trackMetaCache.set(uri, info);
+                return info;
+            }
+        }
+    } catch {}
+
+    // 6. Try PlayerAPI queue search
+    try {
+        const q = await (Spicetify as any).Platform?.PlayerAPI?.getQueue?.();
+        const allTracks = [...(q?.queued || []), ...(q?.nextTracks || []), ...(q?.nextUp || [])];
+        const match = allTracks.find((t: any) => (t.uri === uri || t.track?.uri === uri || t.contextTrack?.uri === uri));
+        if (match) {
+            const extracted = extractTrack(match, true);
+            if (extracted.title && extracted.title !== '?' && extracted.title !== 'Added Track') {
+                trackMetaCache.set(uri, extracted);
+                return extracted;
+            }
+        }
+    } catch {}
+
+    return { title: 'Added Track', artist: '', artUrl: '', uri, uid: '', isManual: true };
 };
 
 const getQueue = async (): Promise<TrackInfo[]> => {
@@ -177,6 +368,14 @@ const getQueue = async (): Promise<TrackInfo[]> => {
         const seenUris = new Set<string>();
         return tracks.filter((t: TrackInfo) => {
             if (!t.uri || seenUris.has(t.uri)) return false;
+            if ((t.title === '?' || t.title === 'Added Track') && trackMetaCache.has(t.uri)) {
+                const cached = trackMetaCache.get(t.uri)!;
+                if (cached.title && cached.title !== '?' && cached.title !== 'Added Track') {
+                    t.title = cached.title;
+                    t.artist = cached.artist || t.artist;
+                    t.artUrl = cached.artUrl || t.artUrl;
+                }
+            }
             if (t.title === '?' && t.artist === '?') return false;
             seenUris.add(t.uri);
             return true;
@@ -320,6 +519,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const seekTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
     const ctxMenuItem = useRef<any>(null);
     const pendingQueueRestore = useRef<TrackInfo[]>([]);
+    const pendingQueueRestoreTs = useRef<number>(0);
     const queueRef = useRef<TrackInfo[]>([]);
     // Timestamp of the last manual queue reorder — refreshQueue skips Spotify fetch
     // for 15 s after a drag-drop so the reordered queue is not immediately overwritten.
@@ -335,7 +535,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const onDataRef = useRef<((d: any, conn: DataConnection) => void) | null>(null);
     // Stable ref to the latest addToQueue — used by the ContextMenu item so
     // it doesn't need to be re-registered every time addToQueue changes.
-    const addToQueueRef = useRef<((uris: string | string[], sender?: { name: string; image: string }) => void) | null>(null);
+    const addToQueueRef = useRef<((uris: string | string[], sender?: { name: string; image: string }, preloadedMeta?: TrackInfo) => void) | null>(null);
     const triggerGuestReconnectRef = useRef<((hostId: string) => void) | null>(null);
     const activeGuestConn = useRef<DataConnection | null>(null);
     const pendingGuestConn = useRef<DataConnection | null>(null);
@@ -547,102 +747,95 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!refs.current.isHost) return;
         // Don't overwrite a manually reordered queue for 15 seconds
         if (Date.now() - queueUserOrdered.current < 15000) return;
-        // A playUri transition is mid-flight; the restore will refresh when done
-        if (pendingQueueRestore.current.length > 0) return;
+        // A playUri transition is mid-flight; expire after 2.5s so it never freezes the queue
+        if (pendingQueueRestore.current.length > 0) {
+            if (Date.now() - pendingQueueRestoreTs.current < 2500) return;
+            pendingQueueRestore.current = [];
+        }
 
-        // Mirror Spotify's real order (manual queue first, then context tracks)
-        // so the Jam queue always matches what a native "next" will actually
-        // play. Manual reorders are protected by the 15s lock above and synced
-        // back into the native queue by moveInQueue.
         const spotifyQueue = (await getQueue()).filter(t => !removedUris.current.has(t.uri!));
         const currentQueue = queueRef.current;
+        if (spotifyQueue.length === 0 && currentQueue.length > 0) return;
 
         const hostUser = {
             name: cachedUser.current.name || 'Host',
             image: cachedUser.current.image || ''
         };
 
-        const enrichedSpotify: TrackInfo[] = spotifyQueue.map(t => {
-            if (!t.uri) return t;
-            let by = addedByMap.current.get(t.uri);
-            if (!by && t.isManual && (hostUser.name || hostUser.image)) {
-                by = hostUser;
-                addedByMap.current.set(t.uri, hostUser);
+        const spotifyMap = new Map<string, TrackInfo>();
+        spotifyQueue.forEach(t => {
+            if (t.uri) {
+                let by = addedByMap.current.get(t.uri);
+                if (!by && t.isManual && (hostUser.name || hostUser.image)) {
+                    by = hostUser;
+                    addedByMap.current.set(t.uri, hostUser);
+                }
+                spotifyMap.set(t.uri, by ? { ...t, addedBy: by } : t);
             }
-            return by ? { ...t, addedBy: by } : t;
         });
 
-        // Anchor-based merge: preserve exact positions of fake/custom tracks relative to surrounding real tracks
-        const customTracksWithContext: {
-            track: TrackInfo;
-            prevUri: string | null;
-            nextUri: string | null;
-        }[] = [];
+        const mergedQueue: TrackInfo[] = [];
+        const seenSpotifyUris = new Set<string>();
 
-        for (let i = 0; i < currentQueue.length; i++) {
-            const item = currentQueue[i];
-            if (item.isCustom || item.uri?.startsWith('jam:fake:')) {
-                let prevUri: string | null = null;
-                for (let j = i - 1; j >= 0; j--) {
-                    if (!currentQueue[j].isCustom && !currentQueue[j].uri?.startsWith('jam:fake:')) {
-                        prevUri = currentQueue[j].uri || null;
-                        break;
-                    }
+        currentQueue.forEach(t => {
+            if (t.isCustom || t.uri?.startsWith('jam:fake:')) {
+                mergedQueue.push(t);
+            } else if (t.uri && spotifyMap.has(t.uri)) {
+                const sTrack = spotifyMap.get(t.uri)!;
+                if ((!sTrack.title || sTrack.title === '?' || sTrack.title === 'Added Track') && t.title && t.title !== 'Added Track' && t.title !== '?') {
+                    mergedQueue.push({ ...sTrack, title: t.title, artist: t.artist || sTrack.artist, artUrl: t.artUrl || sTrack.artUrl });
+                } else {
+                    mergedQueue.push(sTrack);
                 }
-                let nextUri: string | null = null;
-                for (let j = i + 1; j < currentQueue.length; j++) {
-                    if (!currentQueue[j].isCustom && !currentQueue[j].uri?.startsWith('jam:fake:')) {
-                        nextUri = currentQueue[j].uri || null;
-                        break;
-                    }
+                seenSpotifyUris.add(t.uri);
+            } else if (t.uri) {
+                if ((!t.title || t.title === 'Added Track' || t.title === '?') && trackMetaCache.has(t.uri)) {
+                    const cached = trackMetaCache.get(t.uri)!;
+                    mergedQueue.push({ ...t, title: cached.title, artist: cached.artist || t.artist, artUrl: cached.artUrl || t.artUrl });
+                } else {
+                    mergedQueue.push(t);
                 }
-                customTracksWithContext.push({ track: item, prevUri, nextUri });
+                seenSpotifyUris.add(t.uri);
             }
-        }
+        });
 
-        let mergedQueue: TrackInfo[];
-        if (customTracksWithContext.length === 0) {
-            mergedQueue = enrichedSpotify;
-        } else {
-            mergedQueue = [...enrichedSpotify];
-            for (const { track, prevUri, nextUri } of customTracksWithContext) {
-                let inserted = false;
-                if (prevUri) {
-                    const prevIdx = mergedQueue.findIndex(t => t.uri === prevUri);
-                    if (prevIdx !== -1) {
-                        let insertAt = prevIdx + 1;
-                        while (insertAt < mergedQueue.length && (mergedQueue[insertAt].isCustom || mergedQueue[insertAt].uri?.startsWith('jam:fake:'))) {
-                            insertAt++;
-                        }
-                        mergedQueue.splice(insertAt, 0, track);
-                        inserted = true;
-                    }
-                }
-                if (!inserted && nextUri) {
-                    const nextIdx = mergedQueue.findIndex(t => t.uri === nextUri);
-                    if (nextIdx !== -1) {
-                        mergedQueue.splice(nextIdx, 0, track);
-                        inserted = true;
-                    }
-                }
-                if (!inserted) {
-                    if (!prevUri) {
-                        mergedQueue.unshift(track);
-                    } else {
-                        mergedQueue.push(track);
-                    }
-                }
+        spotifyQueue.forEach(t => {
+            if (t.uri && !seenSpotifyUris.has(t.uri)) {
+                mergedQueue.push(spotifyMap.get(t.uri) || t);
             }
-        }
+        });
 
-        if (JSON.stringify(mergedQueue.map(t => t.uri)) !== JSON.stringify(currentQueue.map(t => t.uri))) {
+        const isDiff = JSON.stringify(mergedQueue.map(t => `${t.uri}|${t.title}|${t.artist}|${t.artUrl}`)) !==
+                       JSON.stringify(currentQueue.map(t => `${t.uri}|${t.title}|${t.artist}|${t.artUrl}`));
+        if (isDiff) {
             queueRef.current = mergedQueue;
             setQueue(mergedQueue);
             broadcast({ type: 'Q', queue: mergedQueue });
         }
+
+        // Background resolve any remaining placeholder tracks in mergedQueue
+        const placeholders = mergedQueue.filter(t => !t.isCustom && !t.uri?.startsWith('jam:fake:') && (!t.title || t.title === 'Added Track' || t.title === '?'));
+        if (placeholders.length > 0) {
+            Promise.all(placeholders.map(p => getTrackDetails(p.uri))).then(resolved => {
+                let changed = false;
+                const updated = queueRef.current.map(item => {
+                    const found = resolved.find(r => r.uri === item.uri);
+                    if (found && found.title && found.title !== 'Added Track' && found.title !== '?') {
+                        changed = true;
+                        return { ...item, title: found.title, artist: found.artist || item.artist, artUrl: found.artUrl || item.artUrl };
+                    }
+                    return item;
+                });
+                if (changed) {
+                    queueRef.current = updated;
+                    setQueue(updated);
+                    broadcast({ type: 'Q', queue: updated });
+                }
+            }).catch(() => {});
+        }
     }, [broadcast]);
 
-    const addToQueue = useCallback(async (uris: string | string[], sender?: { name: string; image: string }) => {
+    const addToQueue = useCallback(async (uris: string | string[], sender?: { name: string; image: string }, preloadedMeta?: TrackInfo) => {
         const uriArray = Array.isArray(uris) ? uris : [uris];
         if (refs.current.isHost) {
             try {
@@ -660,9 +853,30 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 });
                 await Spicetify.addToQueue(uriArray.map(uri => ({ uri })));
                 Spicetify.showNotification(uriArray.length > 1 ? `Added ${uriArray.length} tracks!` : 'Added!');
-                // Reset dirty flag so the newly added track is fetched from Spotify
+
+                // Optimistically fetch track metadata and insert into queue immediately
+                try {
+                    const fetchedTracks: TrackInfo[] = [];
+                    for (const u of uriArray) {
+                        let meta: TrackInfo;
+                        if (preloadedMeta && preloadedMeta.uri === u && preloadedMeta.title && preloadedMeta.title !== 'Added Track') {
+                            meta = preloadedMeta;
+                            trackMetaCache.set(u, meta);
+                        } else {
+                            meta = await getTrackDetails(u);
+                        }
+                        fetchedTracks.push({ ...meta, addedBy: userToAssign });
+                    }
+                    const updated = [...queueRef.current, ...fetchedTracks];
+                    queueRef.current = updated;
+                    setQueue(updated);
+                    broadcast({ type: 'Q', queue: updated });
+                } catch {}
+
+                pendingQueueRestore.current = [];
                 queueUserOrdered.current = 0;
-                setTimeout(refreshQueue, 500); 
+                setTimeout(refreshQueue, 600);
+                setTimeout(refreshQueue, 1500); 
             } catch { 
                 Spicetify.showNotification('Failed to add to queue', true); 
             }
@@ -672,12 +886,19 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (!cachedUser.current.name || cachedUser.current.name === 'Listener') {
                     cachedUser.current = await fetchUserAsync();
                 }
-                uriArray.forEach(uri => c.send({
-                    type: 'ADD_Q',
-                    uri,
-                    // Send our identity so the host can show who added this track
-                    addedBy: { name: cachedUser.current.name, image: cachedUser.current.image }
-                }));
+                uriArray.forEach(async uri => {
+                    let trackInfo: TrackInfo | undefined = undefined;
+                    try {
+                        const meta = await getTrackDetails(uri);
+                        if (meta && meta.title && meta.title !== 'Added Track') trackInfo = meta;
+                    } catch {}
+                    c.send({
+                        type: 'ADD_Q',
+                        uri,
+                        trackInfo,
+                        addedBy: { name: cachedUser.current.name, image: cachedUser.current.image }
+                    });
+                });
                 Spicetify.showNotification(uriArray.length > 1 ? `Requested ${uriArray.length} tracks!` : 'Requested!'); 
             } else {
                 Spicetify.showNotification('Not connected to host — try rejoining the Jam', true);
@@ -800,6 +1021,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const newQueue = queueRef.current.filter(t => t.uri !== uri);
             queueRef.current = newQueue;
             pendingQueueRestore.current = newQueue;
+            pendingQueueRestoreTs.current = Date.now();
             setQueue(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
             // Lock the Jam queue so the 5s refreshQueue doesn't replace it with
@@ -1069,6 +1291,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     const newQueue = queueRef.current.filter(t => t.uri !== d.uri);
                     queueRef.current = newQueue;
                     pendingQueueRestore.current = newQueue;
+                    pendingQueueRestoreTs.current = Date.now();
                     setQueue(newQueue);
                     broadcast({ type: 'Q', queue: newQueue });
                     refs.current.targetUri = d.uri;
@@ -1224,7 +1447,10 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     if (guestUser && d.uri) {
                         addedByMap.current.set(d.uri, guestUser);
                     }
-                    addToQueue(d.uri, guestUser);
+                    if (d.trackInfo && d.trackInfo.title && d.trackInfo.title !== 'Added Track' && d.uri) {
+                        trackMetaCache.set(d.uri, d.trackInfo);
+                    }
+                    addToQueue(d.uri, guestUser, d.trackInfo);
                 }
                 break;
             case 'ADD_CUSTOM_Q':
