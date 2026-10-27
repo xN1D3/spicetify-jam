@@ -529,6 +529,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // URIs removed from the Jam queue that can't be removed natively (context
     // tracks) — filtered out of refreshes and skipped if they start playing
     const removedUris = useRef<Set<string>>(new Set());
+    const recentlyAddedUris = useRef<Map<string, number>>(new Map());
     // Stable ref to the latest onData — lets setupConn bind a single
     // permanent handler that always delegates to the current closure,
     // avoiding stale captures on existing WebRTC data connections.
@@ -753,9 +754,10 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             pendingQueueRestore.current = [];
         }
 
-        const spotifyQueue = (await getQueue()).filter(t => !removedUris.current.has(t.uri!));
+        const curPlayingUri = Spicetify.Player.data?.item?.uri;
+        const rawSpotifyQueue = await getQueue();
+        const spotifyQueue = rawSpotifyQueue.filter(t => !removedUris.current.has(t.uri!) && t.uri !== curPlayingUri);
         const currentQueue = queueRef.current;
-        if (spotifyQueue.length === 0 && currentQueue.length > 0) return;
 
         const hostUser = {
             name: cachedUser.current.name || 'Host',
@@ -776,10 +778,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const mergedQueue: TrackInfo[] = [];
         const seenSpotifyUris = new Set<string>();
+        const now = Date.now();
 
         currentQueue.forEach(t => {
             if (t.isCustom || t.uri?.startsWith('jam:fake:')) {
                 mergedQueue.push(t);
+            } else if (t.uri === curPlayingUri) {
+                // If it is playing right now in Now Playing, do not keep in queue
+                seenSpotifyUris.add(t.uri);
             } else if (t.uri && spotifyMap.has(t.uri)) {
                 const sTrack = spotifyMap.get(t.uri)!;
                 if ((!sTrack.title || sTrack.title === '?' || sTrack.title === 'Added Track') && t.title && t.title !== 'Added Track' && t.title !== '?') {
@@ -788,7 +794,8 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     mergedQueue.push(sTrack);
                 }
                 seenSpotifyUris.add(t.uri);
-            } else if (t.uri) {
+            } else if (t.uri && (now - (recentlyAddedUris.current.get(t.uri) || 0) < 6000)) {
+                // Keep recently added track during optimistic window while Spotify processes it
                 if ((!t.title || t.title === 'Added Track' || t.title === '?') && trackMetaCache.has(t.uri)) {
                     const cached = trackMetaCache.get(t.uri)!;
                     mergedQueue.push({ ...t, title: cached.title, artist: cached.artist || t.artist, artUrl: cached.artUrl || t.artUrl });
@@ -797,10 +804,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 }
                 seenSpotifyUris.add(t.uri);
             }
+            // If it's not in spotifyMap, not recently added, and not custom, it has finished or been deleted
         });
 
         spotifyQueue.forEach(t => {
-            if (t.uri && !seenSpotifyUris.has(t.uri)) {
+            if (t.uri && t.uri !== curPlayingUri && !seenSpotifyUris.has(t.uri)) {
                 mergedQueue.push(spotifyMap.get(t.uri) || t);
             }
         });
@@ -850,6 +858,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 uriArray.forEach(u => {
                     removedUris.current.delete(u);
                     addedByMap.current.set(u, userToAssign);
+                    recentlyAddedUris.current.set(u, Date.now());
                 });
                 await Spicetify.addToQueue(uriArray.map(uri => ({ uri })));
                 Spicetify.showNotification(uriArray.length > 1 ? `Added ${uriArray.length} tracks!` : 'Added!');
@@ -1181,6 +1190,9 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         refs.current.guestCreateSong = false;
         setMembers([]); 
         setQueue([]); 
+        queueRef.current = [];
+        addedByMap.current.clear();
+        recentlyAddedUris.current.clear();
         setNowPlaying(null);
         refs.current.targetUri = null;
         refs.current.sessionPinged = false;
@@ -1762,6 +1774,13 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 setReconnecting(false);
                 setHostName(me.name); setMembers([{ id: 'host', name: me.name, image: me.image, isHost: true, status: 'active' }]);
                 const t = getTrack(); if (t) { setNowPlaying(t); refs.current.targetUri = t.uri || null; }
+                if (!requestedId) {
+                    setQueue([]);
+                    queueRef.current = [];
+                    addedByMap.current.clear();
+                    removedUris.current.clear();
+                    recentlyAddedUris.current.clear();
+                }
                 setIsPlaying(Spicetify.Player.isPlaying()); setProgress(Spicetify.Player.getProgress()); setDuration(Spicetify.Player.getDuration());
                 setTimeout(refreshQueue, 500); res();
             });
@@ -1922,8 +1941,16 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     }
                     const t = getTrack(); if (t) setNowPlaying(t);
                     refs.current.targetUri = uri || null;
-                    // Clear queue attribution for the track that just started playing
-                    if (uri) addedByMap.current.delete(uri);
+                    // Clear queue attribution and remove track that just started playing from queue
+                    if (uri) {
+                        addedByMap.current.delete(uri);
+                        const remaining = queueRef.current.filter(item => item.uri !== uri);
+                        if (remaining.length !== queueRef.current.length) {
+                            queueRef.current = remaining;
+                            setQueue(remaining);
+                            broadcast({ type: 'Q', queue: remaining });
+                        }
+                    }
                     const hostPaused = !Spicetify.Player.isPlaying();
                     broadcast({ type: 'PLAY', uri: uri || '', pos: 0, ts: Date.now(), np: t, paused: hostPaused });
                     if (pendingQueueRestore.current.length > 0) {
