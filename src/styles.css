@@ -481,6 +481,94 @@
 .jam-q-btn.green:hover { background: rgba(29,185,84,0.18); color: #1db954; }
 .jam-q-btn.red:hover   { background: rgba(232,68,68,0.18); color: #e84444; }
 
+/* ── Custom / Fake Track (Chat via Queue) ── */
+.jam-q-add-btn {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.25);
+    cursor: pointer;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+    line-height: 1;
+}
+.jam-q-add-btn svg {
+    display: block;
+}
+.jam-q-add-btn:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+}
+.jam-q-add-btn.active {
+    color: #ff5c5c;
+}
+.jam-add-custom-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(29, 185, 84, 0.12);
+    border: 1px solid rgba(29, 185, 84, 0.3);
+    border-radius: 12px;
+    color: #1ed760;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 3px 10px;
+    cursor: pointer;
+    text-transform: none !important;
+    letter-spacing: normal !important;
+    transition: all 0.2s ease;
+}
+.jam-add-custom-btn:hover {
+    background: rgba(29, 185, 84, 0.25);
+    border-color: rgba(29, 185, 84, 0.6);
+    color: #fff;
+    transform: translateY(-1px);
+}
+.jam-add-custom-btn.active {
+    background: rgba(255, 92, 92, 0.15);
+    border-color: rgba(255, 92, 92, 0.4);
+    color: #ff758c;
+}
+.jam-custom-form {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 10px;
+    margin-bottom: 12px;
+    animation: fadeIn 0.2s ease-out;
+}
+.jam-custom-form-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.7);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.jam-q-thumb-fake {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    border-radius: 5px;
+    box-shadow: 0 2px 6px rgba(245, 87, 108, 0.35);
+}
+.jam-q-fake-row {
+    background: rgba(245, 87, 108, 0.04);
+}
+.jam-q-fake-row:hover {
+    background: rgba(245, 87, 108, 0.09) !important;
+}
+
 /* ── Members ───────────────────────────────── */
 .jam-member-row {
     display: flex; align-items: center; gap: 10px;
@@ -695,4 +783,80 @@ button.jam-playbar-btn svg {
 
 button.jam-playbar-btn.main-genericButton-buttonActive {
     color: var(--spice-button-active, #1db954) !important;
+}
+
+/* ── Recent Rooms ──────────────────────────── */
+.jam-recent-section {
+    margin-top: 2px;
+}
+.jam-recent-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.jam-recent-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 9px;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.jam-recent-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(29, 185, 84, 0.35);
+    transform: translateY(-1px);
+}
+.jam-recent-icon {
+    color: rgba(255, 255, 255, 0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: color 0.15s;
+}
+.jam-recent-card:hover .jam-recent-icon {
+    color: #1db954;
+}
+.jam-recent-info {
+    flex: 1;
+    min-width: 0;
+}
+.jam-recent-id {
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.8px;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.jam-recent-host {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.4);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.jam-recent-del {
+    width: 22px;
+    height: 22px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: rgba(255, 255, 255, 0.25);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+.jam-recent-del:hover {
+    background: rgba(255, 92, 92, 0.15);
+    color: #ff5c5c;
 }

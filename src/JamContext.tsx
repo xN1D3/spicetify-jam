@@ -2,7 +2,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import Peer, { DataConnection } from 'peerjs';
 
-interface TrackInfo { title: string; artist: string; artUrl: string; uri?: string; uid?: string; isManual?: boolean; addedBy?: { name: string; image: string }; }
+interface TrackInfo { title: string; artist: string; artUrl: string; uri?: string; uid?: string; isManual?: boolean; isCustom?: boolean; addedBy?: { name: string; image: string }; }
 export interface Member { id: string; name: string; isHost?: boolean; image?: string; status?: 'active' | 'reconnecting' | 'disconnected'; }
 export interface LastSessionInfo {
     role: 'host' | 'guest';
@@ -13,7 +13,7 @@ export interface LastSessionInfo {
 interface JamState {
     isHost: boolean; jamId: string; members: Member[]; connected: boolean; error: string | null;
     nowPlaying: TrackInfo | null; hostName: string; queue: TrackInfo[];
-    guestControls: boolean; isPlaying: boolean; progress: number; duration: number; ping: number;
+    guestControls: boolean; guestCreateSong: boolean; isPlaying: boolean; progress: number; duration: number; ping: number;
     updateAvailable: boolean;
     reconnecting: boolean;
     savedHostId: string | null;
@@ -21,9 +21,10 @@ interface JamState {
     resumeSession: () => Promise<void>;
     startJam: (requestedId?: string) => Promise<void>; joinJam: (id: string, name?: string) => Promise<void>;
     leaveJam: (clearSavedSession?: boolean) => void; addToQueue: (uri: string, sender?: { name: string; image: string }) => void; removeFromQueue: (uri: string, uid?: string) => void;
+    addCustomTrack: (title: string, artist?: string) => void;
     moveInQueue: (from: number, to: number) => void; requestSync: () => void;
     jumpToTrack: (uri: string) => void; seekTo: (ms: number) => void;
-    kickMember: (id: string) => void; toggleGuestControls: () => void;
+    kickMember: (id: string) => void; toggleGuestControls: () => void; toggleGuestCreateSong: () => void;
     play: () => void; pause: () => void; next: () => void; prev: () => void;
 }
 
@@ -188,6 +189,9 @@ const getQueue = async (): Promise<TrackInfo[]> => {
 const moveTrackNative = async (movedTrack?: TrackInfo, targetTrack?: TrackInfo, isMovingDown = false): Promise<boolean> => {
     try {
         if (!movedTrack?.uri || !targetTrack?.uri) return false;
+        if (movedTrack.isCustom || movedTrack.uri.startsWith('jam:fake:') || targetTrack.isCustom || targetTrack.uri.startsWith('jam:fake:')) {
+            return true;
+        }
         const playerApi = (Spicetify as any).Platform?.PlayerAPI;
         const originQueue = (Spicetify as any).Player?.origin?._queue;
         const reorderFn = playerApi?.reorderQueue ? playerApi.reorderQueue.bind(playerApi)
@@ -215,7 +219,7 @@ const rewriteNativeQueue = async (tracks: TrackInfo[]) => {
     const uniqueTracks: TrackInfo[] = [];
     const seen = new Set<string>();
     for (const t of tracks) {
-        if (t.uri && !seen.has(t.uri)) {
+        if (t.uri && !t.isCustom && !t.uri.startsWith('jam:fake:') && !seen.has(t.uri)) {
             seen.add(t.uri);
             uniqueTracks.push(t);
         }
@@ -268,6 +272,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const [hostName, setHostName] = useState('Host');
     const [queue, setQueue] = useState<TrackInfo[]>([]);
     const [guestControls, setGuestControls] = useState(false);
+    const [guestCreateSong, setGuestCreateSong] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
     const [progress, setProgress] = useState(0);
     const [duration, setDuration] = useState(0);
@@ -284,6 +289,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         connected: false,
         reconnecting: false,
         guestControls: false,
+        guestCreateSong: false,
         jamId: '',
         targetUri: null as string | null,
         ignoreNextSongChange: false,
@@ -380,6 +386,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
     }, []);
     useEffect(() => { refs.current.guestControls = guestControls; }, [guestControls]);
+    useEffect(() => { refs.current.guestCreateSong = guestCreateSong; }, [guestCreateSong]);
     useEffect(() => { refs.current.jamId = jamId; }, [jamId]);
     useEffect(() => { refs.current.isPlaying = isPlaying; }, [isPlaying]);
 
@@ -420,6 +427,8 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     useEffect(() => {
         let tickCounter = 0;
         let pingCounter = 0;
+        let signalingPingCounter = 0;
+        let signalingReconnectCounter = 0;
         const id = setInterval(() => {
             const now = Date.now();
             if (refs.current.isHost) {
@@ -454,6 +463,29 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         }
                     } else {
                         tickCounter = 0;
+                    }
+
+                    // 3. Signaling Keep-Alive: ensure Host stays registered on PeerServer so new guests can always join
+                    if (peerRef.current && !peerRef.current.destroyed) {
+                        if (peerRef.current.disconnected) {
+                            signalingReconnectCounter++;
+                            if (signalingReconnectCounter >= 5) { // retry reconnect every 2s
+                                signalingReconnectCounter = 0;
+                                try { peerRef.current.reconnect(); } catch {}
+                            }
+                        } else {
+                            signalingReconnectCounter = 0;
+                            signalingPingCounter++;
+                            if (signalingPingCounter >= 25) { // send heartbeat every 10s (25 * 400ms)
+                                signalingPingCounter = 0;
+                                try {
+                                    const sock = (peerRef.current as any).socket;
+                                    if (sock?._ws && sock._ws.readyState === WebSocket.OPEN) {
+                                        sock._ws.send(JSON.stringify({ type: 'HEARTBEAT' }));
+                                    }
+                                } catch {}
+                            }
+                        }
                     }
                 } catch {}
             } else if (refs.current.connected) {
@@ -507,7 +539,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // but the playbarBtn.active usually suffices for "open" state.
         // For "connected" state, we'll use the Spicetify notification system.
         if (connected) {
-            Spicetify.showNotification('✅ Jam Connected');
+            Spicetify.showNotification('Jam Connected');
         }
     }, [connected]);
 
@@ -525,23 +557,44 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const spotifyQueue = (await getQueue()).filter(t => !removedUris.current.has(t.uri!));
         const currentQueue = queueRef.current;
 
-        // Merge "added by" attribution from guests or host back into the refreshed queue
         const hostUser = {
             name: cachedUser.current.name || 'Host',
             image: cachedUser.current.image || ''
         };
-        const queueWithAttr = spotifyQueue.map(t => {
-            let by = t.uri ? addedByMap.current.get(t.uri) : undefined;
-            // If track is in the manual queue and hasn't been claimed by a guest, the host added it!
-            if (!by && t.isManual && (hostUser.name || hostUser.image)) {
-                by = hostUser;
-                if (t.uri) addedByMap.current.set(t.uri, hostUser);
+
+        const spotifyMap = new Map<string, TrackInfo>();
+        spotifyQueue.forEach(t => {
+            if (t.uri) {
+                let by = addedByMap.current.get(t.uri);
+                if (!by && t.isManual && (hostUser.name || hostUser.image)) {
+                    by = hostUser;
+                    addedByMap.current.set(t.uri, hostUser);
+                }
+                spotifyMap.set(t.uri, by ? { ...t, addedBy: by } : t);
             }
-            return by ? { ...t, addedBy: by } : t;
         });
-        if (JSON.stringify(queueWithAttr.map(t => t.uri)) !== JSON.stringify(currentQueue.map(t => t.uri))) {
-            setQueue(queueWithAttr);
-            broadcast({ type: 'Q', queue: queueWithAttr });
+
+        const mergedQueue: TrackInfo[] = [];
+        const seenSpotifyUris = new Set<string>();
+
+        currentQueue.forEach(t => {
+            if (t.isCustom || t.uri?.startsWith('jam:fake:')) {
+                mergedQueue.push(t);
+            } else if (t.uri && spotifyMap.has(t.uri)) {
+                mergedQueue.push(spotifyMap.get(t.uri)!);
+                seenSpotifyUris.add(t.uri);
+            }
+        });
+
+        spotifyQueue.forEach(t => {
+            if (t.uri && !seenSpotifyUris.has(t.uri)) {
+                mergedQueue.push(spotifyMap.get(t.uri) || t);
+            }
+        });
+
+        if (JSON.stringify(mergedQueue.map(t => t.uri)) !== JSON.stringify(currentQueue.map(t => t.uri))) {
+            setQueue(mergedQueue);
+            broadcast({ type: 'Q', queue: mergedQueue });
         }
     }, [broadcast]);
 
@@ -599,7 +652,9 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const newQueue = queueRef.current.filter(t => t.uri !== uri);
             setQueue(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
-            try { await Spicetify.removeFromQueue([{ uri, uid } as any]); } catch {}
+            if (!uri.startsWith('jam:fake:')) {
+                try { await Spicetify.removeFromQueue([{ uri, uid } as any]); } catch {}
+            }
             queueUserOrdered.current = 0;
             setTimeout(refreshQueue, 500);
         } else {
@@ -607,6 +662,50 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (c?.open) c.send({ type: 'RM_Q', uri, uid });
         }
     }, [refreshQueue, hostConn, broadcast]);
+
+    const addCustomTrack = useCallback((title: string, customArtist?: string) => {
+        if (!refs.current.isHost && !refs.current.guestCreateSong) {
+            Spicetify.showNotification('Create Song is disabled by Host', true);
+            return;
+        }
+
+        const trimmedTitle = title.trim();
+        if (!trimmedTitle) return;
+
+        const sender = {
+            name: cachedUser.current.name || (refs.current.isHost ? 'Host' : 'Guest'),
+            image: cachedUser.current.image || ''
+        };
+
+        const fakeTrack: TrackInfo = {
+            title: trimmedTitle,
+            artist: customArtist?.trim() || '',
+            artUrl: '',
+            uri: `jam:fake:${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            isManual: true,
+            isCustom: true,
+            addedBy: sender
+        };
+
+        if (refs.current.isHost) {
+            const updated = [...queueRef.current, fakeTrack];
+            setQueue(updated);
+            broadcast({ type: 'Q', queue: updated });
+            queueUserOrdered.current = Date.now();
+            Spicetify.showNotification(`💬 Added "${trimmedTitle}" to Queue`);
+        } else {
+            const c = hostConn();
+            if (c?.open) {
+                c.send({
+                    type: 'ADD_CUSTOM_Q',
+                    track: fakeTrack
+                });
+                Spicetify.showNotification(`💬 Sent "${trimmedTitle}" to Host Queue`);
+            } else {
+                Spicetify.showNotification('Not connected to Host', true);
+            }
+        }
+    }, [broadcast, hostConn]);
 
     const moveInQueue = useCallback((from: number, to: number) => {
         if (!refs.current.isHost) {
@@ -645,6 +744,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, [broadcast, hostConn]);
 
     const jumpToTrack = useCallback((uri: string) => {
+        if (uri.startsWith('jam:fake:')) {
+            const fake = queueRef.current.find(t => t.uri === uri);
+            Spicetify.showNotification(`💬 "${fake?.title || 'Fake Song'}" is a text message, not an audio track`);
+            return;
+        }
         if (refs.current.isHost) {
             refs.current.targetUri = uri;
             const idx = queueRef.current.findIndex(t => t.uri === uri);
@@ -683,12 +787,15 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         broadcast({ type: 'GCTRL', on: v }); 
     };
 
+    const toggleGuestCreateSong = () => {
+        if (!isHost) return;
+        const v = !guestCreateSong;
+        setGuestCreateSong(v);
+        broadcast({ type: 'GCREATE', on: v });
+    };
+
     const play = () => { 
         if (refs.current.isHost) { 
-            // Don't call setIsPlaying here — onPP is the single source of truth.
-            // Calling it eagerly here then letting onPP correct it was the cause
-            // of the play→pause→play UI flicker (Spotify's isPlaying() is still
-            // false at the instant onPP fires right after Player.play()).
             Spicetify.Player.play(); 
         } else if (refs.current.guestControls) { 
             const c = hostConn(); 
@@ -708,25 +815,31 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Stable callback — used by host next() AND guest CMD:next on host side
     const playNextInJamQueue = useCallback(() => {
         if (queueRef.current.length > 0) {
-            const nextTrack = queueRef.current[0];
+            let currentQ = [...queueRef.current];
+            // Consume any fake tracks at the head of the queue
+            while (currentQ.length > 0 && (currentQ[0].isCustom || currentQ[0].uri?.startsWith('jam:fake:'))) {
+                const fake = currentQ.shift()!;
+                Spicetify.showNotification(`💬 Up Next: "${fake.title}"`);
+            }
+            if (currentQ.length === 0) {
+                setQueue([]);
+                broadcast({ type: 'Q', queue: [] });
+                Spicetify.Player.next();
+                return;
+            }
+
+            const nextTrack = currentQ[0];
             refs.current.targetUri = nextTrack.uri!;
-            const newQueue = queueRef.current.slice(1);
+            const newQueue = currentQ.slice(1);
             setQueue(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
 
             const nativeNext: any = Spicetify.Queue?.nextTracks?.[0];
             const nativeNextUri = nativeNext?.contextTrack?.uri || nativeNext?.uri;
             if (nativeNextUri && nativeNextUri === nextTrack.uri) {
-                // Jam queue head matches Spotify's own next track — use a native
-                // skip so the playing context (playlist/album continuation) stays
-                // intact. playUri would strand playback in a single-track context
-                // whose autoplay is radio, i.e. random songs.
                 pendingQueueRestore.current = [];
                 Spicetify.Player.next();
             } else {
-                // Jam queue diverged from Spotify's — play directly, then restore
-                // the remaining tracks into Spotify's native queue on songchange
-                // so the native next button keeps following the Jam queue.
                 pendingQueueRestore.current = newQueue;
                 queueUserOrdered.current = Date.now();
                 Spicetify.Player.playUri(nextTrack.uri!);
@@ -799,6 +912,10 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setConnected(false); 
         setJamId(''); 
         setIsHost(false); 
+        setGuestControls(false);
+        refs.current.guestControls = false;
+        setGuestCreateSong(false);
+        refs.current.guestCreateSong = false;
         setMembers([]); 
         setQueue([]); 
         setNowPlaying(null);
@@ -854,7 +971,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 setMembers(all);
                 conn.send({
                     type: 'INIT', np: getTrack(), queue: await getQueue(), host: cachedUser.current.name,
-                    gc: r.guestControls, playing: Spicetify.Player.isPlaying(), members: all,
+                    gc: r.guestControls, gcreate: r.guestCreateSong, playing: Spicetify.Player.isPlaying(), members: all,
                     progress: Spicetify.Player.getProgress(), duration: Spicetify.Player.getDuration()
                 });
                 if (Spicetify.Player.data?.item) conn.send({ type: 'PLAY', uri: Spicetify.Player.data.item.uri, pos: Spicetify.Player.getProgress(), ts: Date.now(), paused: !Spicetify.Player.isPlaying() });
@@ -878,17 +995,26 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         if (curId) {
                             localStorage.setItem('jam_saved_session', JSON.stringify({ role: 'guest', jamId: curId, hostName: d.host, ts: Date.now() }));
                             setSavedSession({ role: 'guest', jamId: curId, hostName: d.host });
+
+                            const raw = localStorage.getItem('jam_recent_rooms');
+                            let list: any[] = raw ? JSON.parse(raw) : [];
+                            list = list.filter((r: any) => r.jamId?.toUpperCase() !== curId.toUpperCase());
+                            list.unshift({ jamId: curId.toUpperCase(), hostName: d.host, ts: Date.now() });
+                            if (list.length > 5) list = list.slice(0, 5);
+                            localStorage.setItem('jam_recent_rooms', JSON.stringify(list));
                         }
                     } catch {}
                 }
                 if (d.members) setMembers(d.members);
                 if (d.gc !== undefined) setGuestControls(d.gc);
+                if (d.gcreate !== undefined) setGuestCreateSong(d.gcreate);
                 if (d.playing !== undefined) setIsPlaying(d.playing);
                 if (d.progress !== undefined) setProgress(d.progress);
                 if (d.duration !== undefined) setDuration(d.duration);
                 break;
             case 'MEMBERS': setMembers(d.members); break;
             case 'GCTRL': setGuestControls(d.on); break;
+            case 'GCREATE': setGuestCreateSong(d.on); break;
             case 'CMD':
                 if (!r.isHost || !r.guestControls) return;
                 if (Date.now() - (cmdThrottle.current.get(conn.peer) || 0) < 500) return;
@@ -1060,6 +1186,22 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         addedByMap.current.set(d.uri, guestUser);
                     }
                     addToQueue(d.uri, guestUser);
+                }
+                break;
+            case 'ADD_CUSTOM_Q':
+                if (r.isHost && d.track) {
+                    if (!r.guestCreateSong) return;
+                    const guestSender = memberRegistry.current.get(conn.peer) || d.track.addedBy;
+                    const trackWithSender: TrackInfo = {
+                        ...d.track,
+                        artist: d.track.artist?.trim() || '',
+                        addedBy: guestSender || d.track.addedBy
+                    };
+                    const updated = [...queueRef.current, trackWithSender];
+                    setQueue(updated);
+                    broadcast({ type: 'Q', queue: updated });
+                    queueUserOrdered.current = Date.now();
+                    Spicetify.showNotification(`💬 ${guestSender?.name || 'Friend'} added "${d.track.title}" to Queue`);
                 }
                 break;
             case 'RM_Q': if (r.isHost) removeFromQueue(d.uri, d.uid); break;
@@ -1311,7 +1453,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const me = await (userPromise.current || fetchUserAsync());
         cachedUser.current = me;
 
-        const genId = () => Math.random().toString(36).substring(2, 8).toUpperCase();
+        const genId = () => {
+            const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+            let id = '';
+            for (let i = 0; i < 6; i++) {
+                id += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return id;
+        };
         const targetId = (typeof requestedId === 'string' && requestedId.trim())
             ? requestedId.trim().toUpperCase()
             : genId();
@@ -1335,6 +1484,13 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     localStorage.setItem('jam_saved_host_id', id);
                     localStorage.setItem('jam_saved_host_ts', Date.now().toString());
                     setSavedSession({ role: 'host', jamId: id });
+
+                    const raw = localStorage.getItem('jam_recent_rooms');
+                    let list: any[] = raw ? JSON.parse(raw) : [];
+                    list = list.filter((r: any) => r.jamId?.toUpperCase() !== id.toUpperCase());
+                    list.unshift({ jamId: id.toUpperCase(), hostName: `${me.name || 'You'} (Host)`, role: 'host', ts: Date.now() });
+                    if (list.length > 5) list = list.slice(0, 5);
+                    localStorage.setItem('jam_recent_rooms', JSON.stringify(list));
                 } catch {}
                 setJamId(id); setIsHost(true); setConnected(true); setError(null);
                 setReconnecting(false);
@@ -1344,6 +1500,16 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 setTimeout(refreshQueue, 500); res();
             });
             p.on('connection', setupConn);
+            p.on('disconnected', () => {
+                console.warn('[Jam] Host signaling disconnected from PeerServer. Reconnecting...');
+                if (refs.current.isHost && !p.destroyed) {
+                    setTimeout(() => {
+                        if (refs.current.isHost && !p.destroyed && p.disconnected) {
+                            try { p.reconnect(); } catch {}
+                        }
+                    }, 1000);
+                }
+            });
             p.on('error', e => { 
                 const errType = (e as any).type;
                 if (errType === 'id-taken' && retries < 20) { 
@@ -1353,6 +1519,13 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         startJam(targetId, retries + 1).then(res).catch(rej); 
                     }, 1500);
                 } else { 
+                    if (refs.current.isHost && refs.current.connected) {
+                        console.warn('[Jam] Host signaling error (recovering):', errType);
+                        if (p.disconnected && !p.destroyed) {
+                            setTimeout(() => { try { p.reconnect(); } catch {} }, 2000);
+                        }
+                        return;
+                    }
                     setError(`Connection error: ${errType || 'unknown'}`); 
                     rej(e); 
                 } 
@@ -1365,7 +1538,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const me = await (userPromise.current || fetchUserAsync());
         cachedUser.current = me;
 
-        const cleanId = id.includes('jam=') ? id.split('jam=')[1] : id.trim();
+        const cleanId = (id.includes('jam=') ? id.split('jam=')[1] : id).trim().toUpperCase();
         if (!cleanId) { setError('Please enter a Jam ID'); return; }
 
         const p = new Peer(PEER_CONFIG); 
@@ -1405,6 +1578,13 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         try {
                             localStorage.setItem('jam_saved_session', JSON.stringify({ role: 'guest', jamId: cleanId, hostName: 'Host', ts: Date.now() }));
                             setSavedSession({ role: 'guest', jamId: cleanId, hostName: 'Host' });
+
+                            const raw = localStorage.getItem('jam_recent_rooms');
+                            let list: any[] = raw ? JSON.parse(raw) : [];
+                            list = list.filter((r: any) => r.jamId?.toUpperCase() !== cleanId.toUpperCase());
+                            list.unshift({ jamId: cleanId.toUpperCase(), hostName: 'Host', ts: Date.now() });
+                            if (list.length > 5) list = list.slice(0, 5);
+                            localStorage.setItem('jam_recent_rooms', JSON.stringify(list));
                         } catch {}
                         conns.current.set(cleanId, conn); 
                         setJamId(cleanId); 
@@ -1676,11 +1856,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return (
         <Ctx.Provider value={{
             isHost, jamId, members, connected, error, nowPlaying, hostName, queue,
-            guestControls, isPlaying, progress, duration, ping, updateAvailable,
+            guestControls, guestCreateSong, isPlaying, progress, duration, ping, updateAvailable,
             reconnecting, savedHostId, savedSession, resumeSession,
             startJam, joinJam, leaveJam, addToQueue, removeFromQueue,
-            moveInQueue, requestSync, jumpToTrack, seekTo, kickMember,
-            toggleGuestControls, play, pause, next, prev
+            addCustomTrack, moveInQueue, requestSync, jumpToTrack, seekTo, kickMember,
+            toggleGuestControls, toggleGuestCreateSong, play, pause, next, prev
         } as any}>
             {children}
         </Ctx.Provider>
