@@ -879,6 +879,13 @@ button.jam-playbar-btn.main-genericButton-buttonActive {
     color: #ff5c5c;
 }
 
+.jam-section-card.jam-drop-active {
+    border-color: #1ed760 !important;
+    background: rgba(30, 215, 96, 0.08) !important;
+    box-shadow: 0 0 16px rgba(30, 215, 96, 0.25) !important;
+    transform: scale(1.008);
+}
+
 /* ── Local Audio File Integration ───────────────── */
 .jam-local-bar {
     display: flex;

@@ -132,6 +132,29 @@ const getAccessToken = async (): Promise<string | null> => {
     return null;
 };
 
+const parseSpotifyLocalUri = (uri: string): { title: string; artist: string; duration: number } => {
+    try {
+        const parts = uri.split(':');
+        // Format 1: spotify:local:artist:album:title:duration
+        // Format 2: spotify:local:::title:duration
+        let artist = 'Local Artist';
+        let title = 'Local Track';
+        let duration = 0;
+
+        if (parts.length >= 6) {
+            artist = decodeURIComponent(parts[2] || '').replace(/\+/g, ' ') || 'Local Artist';
+            title = decodeURIComponent(parts[4] || '').replace(/\+/g, ' ') || 'Local Track';
+            duration = (parseInt(parts[5], 10) || 0) * 1000;
+        } else if (parts.length >= 4) {
+            title = decodeURIComponent(parts[2] || '').replace(/\+/g, ' ') || 'Local Track';
+            duration = (parseInt(parts[3], 10) || 0) * 1000;
+        }
+        return { title, artist, duration };
+    } catch {
+        return { title: 'Local Track', artist: 'Local Artist', duration: 0 };
+    }
+};
+
 const getTrack = (): TrackInfo | null => {
     const t = Spicetify.Player.data?.item;
     if (!t) return null;
@@ -143,6 +166,11 @@ const getTrack = (): TrackInfo | null => {
         uri: t.uri,
         uid: t.uid
     };
+    if (t.uri?.startsWith('spotify:local:') && (res.title === 'Unknown' || !res.title)) {
+        const parsed = parseSpotifyLocalUri(t.uri);
+        res.title = parsed.title;
+        res.artist = parsed.artist;
+    }
     if (res.uri && res.title && res.title !== 'Unknown' && res.title !== 'Added Track') {
         trackMetaCache.set(res.uri, res);
     }
@@ -181,6 +209,12 @@ const extractTrack = (t: any, isManual = false): TrackInfo => {
         if (!artUrl && cached.artUrl) artUrl = cached.artUrl;
     }
 
+    if (uri.startsWith('spotify:local:') && (title === '?' || title === 'Added Track')) {
+        const parsed = parseSpotifyLocalUri(uri);
+        title = parsed.title;
+        if (artist === '?' || !artist) artist = parsed.artist;
+    }
+
     const res: TrackInfo = { title, artist, artUrl, uri, uid, isManual };
     if (uri && title !== '?' && title !== 'Added Track') {
         trackMetaCache.set(uri, res);
@@ -194,6 +228,20 @@ const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
         if (cached.title && cached.title !== 'Added Track' && cached.title !== '?') {
             return { ...cached, isManual: true };
         }
+    }
+
+    if (uri.startsWith('spotify:local:')) {
+        const parsed = parseSpotifyLocalUri(uri);
+        const info: TrackInfo = {
+            title: parsed.title,
+            artist: parsed.artist,
+            artUrl: '',
+            uri,
+            duration: parsed.duration,
+            isManual: true
+        };
+        trackMetaCache.set(uri, info);
+        return info;
     }
 
     const id = uri.replace('spotify:track:', '').split('?')[0];
@@ -2590,9 +2638,9 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     if (!uris || !uris.length) return false;
                     return uris.some(u => {
                         try {
-                            return (Spicetify as any).URI?.isTrack(u) || u.includes(':track:');
+                            return (Spicetify as any).URI?.isTrack(u) || u.includes(':track:') || u.startsWith('spotify:local:');
                         } catch {
-                            return u.includes(':track:');
+                            return u.includes(':track:') || u.startsWith('spotify:local:');
                         }
                     });
                 },

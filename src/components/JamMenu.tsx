@@ -145,6 +145,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const [customArtist, setCustomArtist] = useState('');
     const fileInputRef = React.useRef<HTMLInputElement | null>(null);
     const [isAddingFiles, setIsAddingFiles] = useState(false);
+    const [isDraggingFile, setIsDraggingFile] = useState(false);
     const [customHostCode, setCustomHostCode] = useState(() => {
         try {
             return localStorage.getItem('jam_custom_host_code') || '';
@@ -535,7 +536,39 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 </div>
 
                 {/* ── QUEUE ── */}
-                <div className="jam-section-card">
+                <div
+                    className={`jam-section-card${isDraggingFile ? ' jam-drop-active' : ''}`}
+                    onDragOver={(e) => {
+                        if (e.dataTransfer.types.includes('Files')) {
+                            e.preventDefault();
+                            setIsDraggingFile(true);
+                        }
+                    }}
+                    onDragLeave={(e) => {
+                        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                        setIsDraggingFile(false);
+                    }}
+                    onDrop={async (e) => {
+                        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                            e.preventDefault();
+                            setIsDraggingFile(false);
+                            const files = Array.from(e.dataTransfer.files);
+                            const audioFiles = files.filter(f => f.type.startsWith('audio/') || /\.(mp3|wav|flac|m4a|ogg|aac)$/i.test(f.name));
+                            if (audioFiles.length > 0) {
+                                setIsAddingFiles(true);
+                                try {
+                                    for (const f of audioFiles) {
+                                        await j.addLocalFileTrack(f);
+                                    }
+                                } finally {
+                                    setIsAddingFiles(false);
+                                }
+                            } else {
+                                Spicetify.showNotification('กรุณาวางไฟล์เพลง (.mp3, .wav, .flac, .m4a)', true);
+                            }
+                        }
+                    }}
+                >
                     <div className="jam-section-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                         <span className="jam-section-title-inner">{I.queue} Up Next · {j.queue.length}</span>
                         {canCreateSong && (
@@ -564,10 +597,10 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                 className="jam-local-btn"
                                 onClick={handlePickLocalFiles}
                                 disabled={isAddingFiles}
-                                title="เลือกไฟล์เพลงในเครื่อง (.mp3, .wav, .flac, .m4a)"
+                                title="เลือกไฟล์เพลงในเครื่อง หรือลากไฟล์มาวางตรงนี้ได้เลย (.mp3, .wav, .flac, .m4a)"
                             >
                                 <span className="jam-local-icon">{I.folder}</span>
-                                <span>{isAddingFiles ? 'กำลังโหลดไฟล์...' : '📁 เลือกไฟล์เพลงในเครื่อง (Local Audio)'}</span>
+                                <span>{isAddingFiles ? 'กำลังโหลดไฟล์...' : '📁 เลือกไฟล์เพลง หรือลากมาวาง (Drag & Drop)'}</span>
                             </button>
                         </div>
                     )}
@@ -607,7 +640,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     {j.queue.length === 0 && !showCustomForm && (
                         <div style={{ textAlign: 'center', padding: '16px 8px', color: 'rgba(255,255,255,0.3)', fontSize: 12 }}>
                             {canCreateSong
-                                ? <>Queue is empty · Add local audio files or Spotify songs</>
+                                ? <>คิวว่าง · ลากไฟล์เพลง (.mp3) มาวาง หรือเพิ่มเพลง Spotify ได้เลย</>
                                 : 'Queue is empty'}
                         </div>
                     )}
