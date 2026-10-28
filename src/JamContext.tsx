@@ -1,9 +1,21 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import Peer, { DataConnection } from 'peerjs';
-import { ytEngine } from './services/YouTubeEngine';
+import { localAudio } from './services/LocalAudioEngine';
 
-interface TrackInfo { title: string; artist: string; artUrl: string; uri?: string; uid?: string; isManual?: boolean; isCustom?: boolean; isYouTube?: boolean; ytId?: string; addedBy?: { name: string; image: string }; }
+interface TrackInfo {
+    title: string;
+    artist: string;
+    artUrl: string;
+    uri?: string;
+    uid?: string;
+    isManual?: boolean;
+    isCustom?: boolean;
+    isLocalAudio?: boolean;
+    localId?: string;
+    duration?: number;
+    addedBy?: { name: string; image: string };
+}
 export interface Member { id: string; name: string; isHost?: boolean; image?: string; status?: 'active' | 'reconnecting' | 'disconnected'; }
 export interface LastSessionInfo {
     role: 'host' | 'guest';
@@ -23,7 +35,7 @@ interface JamState {
     startJam: (requestedId?: string) => Promise<void>; joinJam: (id: string, name?: string) => Promise<void>;
     leaveJam: (clearSavedSession?: boolean) => void; addToQueue: (uri: string | string[], sender?: { name: string; image: string }, preloadedMeta?: TrackInfo) => void; removeFromQueue: (uri: string, uid?: string) => void;
     addCustomTrack: (title: string, artist?: string) => void;
-    addYouTubeTrack: (urlOrId: string) => Promise<boolean>;
+    addLocalFileTrack: (file: File) => Promise<boolean>;
     moveInQueue: (from: number, to: number) => void; requestSync: () => void;
     jumpToTrack: (uri: string) => void; seekTo: (ms: number) => void;
     kickMember: (id: string) => void; toggleGuestControls: () => void; toggleGuestCreateSong: () => void;
@@ -66,7 +78,7 @@ const fetchUserAsync = async (): Promise<{ name: string; image: string }> => {
             if (user.displayName) name = user.displayName;
             image = fmtImg(user.images?.[0]?.url || user.images?.[0] || user.imageUrl || user.avatar || '');
         }
-    } catch {}
+    } catch { }
 
     if (!name || !image) {
         try {
@@ -75,7 +87,7 @@ const fetchUserAsync = async (): Promise<{ name: string; image: string }> => {
                 if (!name) name = res.displayName || res.name || '';
                 if (!image) image = fmtImg(res.imageUrl || res.image || res.images?.[0]?.url || '');
             }
-        } catch {}
+        } catch { }
     }
 
     if (!image) {
@@ -102,21 +114,21 @@ const getAccessToken = async (): Promise<string | null> => {
     try {
         const state = (Spicetify as any).Platform?.AuthorizationAPI?.getState?.();
         if (state?.token?.accessToken) return state.token.accessToken;
-    } catch {}
+    } catch { }
     try {
         const token = await (Spicetify as any).Platform?.AuthorizationAPI?.getAccessToken?.();
         if (typeof token === 'string') return token;
         if (token?.accessToken) return token.accessToken;
-    } catch {}
+    } catch { }
     try {
         const token = await (Spicetify as any).Platform?.Session?.getAccessToken?.();
         if (typeof token === 'string') return token;
         if (token?.accessToken) return token.accessToken;
-    } catch {}
+    } catch { }
     try {
         const res = await (Spicetify as any).CosmosAsync?.get?.('sp://identity/v1/token');
         if (res?.accessToken) return res.accessToken;
-    } catch {}
+    } catch { }
     return null;
 };
 
@@ -198,8 +210,8 @@ const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
             const match = allTracks.find((t: any) => t?.uri === uri);
             if (match && match.name) {
                 const artists = match.artists?.items?.map((a: any) => a.profile?.name || a.name).filter(Boolean).join(', ') ||
-                                match.artists?.map?.((a: any) => a.name).filter(Boolean).join(', ') ||
-                                'Unknown Artist';
+                    match.artists?.map?.((a: any) => a.name).filter(Boolean).join(', ') ||
+                    'Unknown Artist';
                 const art = fmtImg(match.albumOfTrack?.coverArt?.sources?.[0]?.url || match.album?.images?.[0]?.url);
                 const info: TrackInfo = {
                     title: match.name,
@@ -213,7 +225,7 @@ const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
                 return info;
             }
         }
-    } catch {}
+    } catch { }
 
     // 2. Try Spotify Web API via fetch with Access Token
     try {
@@ -238,7 +250,7 @@ const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
                 }
             }
         }
-    } catch {}
+    } catch { }
 
     // 3. Try CosmosAsync with Spotify Web API
     try {
@@ -255,7 +267,7 @@ const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
             trackMetaCache.set(uri, info);
             return info;
         }
-    } catch {}
+    } catch { }
 
     // 4. Try Spotify GraphQL getTrackName & queryTrackArtists
     try {
@@ -272,7 +284,7 @@ const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
                         const artList = artRes?.data?.trackUnion?.artists?.items?.map((a: any) => a.profile?.name).filter(Boolean);
                         if (artList && artList.length > 0) artist = artList.join(', ');
                     }
-                } catch {}
+                } catch { }
                 const info: TrackInfo = {
                     title: trackUnion.name,
                     artist,
@@ -285,7 +297,7 @@ const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
                 return info;
             }
         }
-    } catch {}
+    } catch { }
 
     // 5. Try Spotify public oEmbed (Zero auth, 100% reliable fallback)
     try {
@@ -305,7 +317,7 @@ const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
                 return info;
             }
         }
-    } catch {}
+    } catch { }
 
     // 6. Try PlayerAPI queue search
     try {
@@ -319,7 +331,7 @@ const getTrackDetails = async (uri: string): Promise<TrackInfo> => {
                 return extracted;
             }
         }
-    } catch {}
+    } catch { }
 
     return { title: 'Added Track', artist: '', artUrl: '', uri, uid: '', isManual: true };
 };
@@ -334,7 +346,7 @@ const getQueue = async (): Promise<TrackInfo[]> => {
             if (res && Array.isArray(res.queued)) {
                 tracks = res.queued.map((t: any) => extractTrack(t, true));
             }
-        } catch {}
+        } catch { }
 
         // 2. Try CosmosAsync queue as fallback for manual queue
         if (!tracks || tracks.length === 0) {
@@ -343,7 +355,7 @@ const getQueue = async (): Promise<TrackInfo[]> => {
                 if (res && Array.isArray(res.queued)) {
                     tracks = res.queued.map((t: any) => extractTrack(t, true));
                 }
-            } catch {}
+            } catch { }
         }
 
         if (!tracks || tracks.length === 0) return [];
@@ -378,7 +390,7 @@ const moveTrackNative = async (movedTrack?: TrackInfo, targetTrack?: TrackInfo, 
         const originQueue = (Spicetify as any).Player?.origin?._queue;
         const reorderFn = playerApi?.reorderQueue ? playerApi.reorderQueue.bind(playerApi)
             : originQueue?.reorderQueue ? originQueue.reorderQueue.bind(originQueue)
-            : null;
+                : null;
 
         if (reorderFn) {
             const item = { uid: movedTrack.uid || undefined, uri: movedTrack.uri };
@@ -408,11 +420,11 @@ const rewriteNativeQueue = async (tracks: TrackInfo[]) => {
     }
     for (const t of uniqueTracks) {
         if (!t.uri) continue;
-        try { await Spicetify.removeFromQueue([{ uri: t.uri, ...(t.uid ? { uid: t.uid } : {}) } as any]); } catch {}
+        try { await Spicetify.removeFromQueue([{ uri: t.uri, ...(t.uid ? { uid: t.uid } : {}) } as any]); } catch { }
     }
     for (const t of uniqueTracks) {
         if (!t.uri) continue;
-        try { await Spicetify.addToQueue([{ uri: t.uri }]); } catch {}
+        try { await Spicetify.addToQueue([{ uri: t.uri }]); } catch { }
     }
 };
 
@@ -438,7 +450,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (savedLegacy && Date.now() - tsLegacy < 2 * 60 * 60 * 1000) {
                 return { role: 'host', jamId: savedLegacy };
             }
-        } catch {}
+        } catch { }
         return null;
     });
     const savedHostId = savedSession?.role === 'host' ? savedSession.jamId : null;
@@ -463,7 +475,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const peerRef = useRef<Peer | null>(null);
     const conns = useRef<Map<string, DataConnection>>(new Map());
-    const memberRegistry = useRef<Map<string, {name: string, image: string}>>(new Map());
+    const memberRegistry = useRef<Map<string, { name: string, image: string }>>(new Map());
     const cachedUser = useRef<{ name: string; image: string }>({ name: 'Listener', image: '' });
     const userPromise = useRef<Promise<{ name: string; image: string }> | null>(null);
     const refs = useRef({
@@ -523,8 +535,17 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const triggerGuestReconnectRef = useRef<((hostId: string) => void) | null>(null);
     const activeGuestConn = useRef<DataConnection | null>(null);
     const pendingGuestConn = useRef<DataConnection | null>(null);
-    const activeYtTrack = useRef<TrackInfo | null>(null);
-    const isPlayingYtRef = useRef<boolean>(false);
+    const activeLocalTrack = useRef<TrackInfo | null>(null);
+    const isPlayingLocalRef = useRef<boolean>(false);
+    const incomingFiles = useRef<Map<string, {
+        title: string;
+        artist: string;
+        duration: number;
+        mimeType: string;
+        totalChunks: number;
+        receivedChunks: (ArrayBuffer | null)[];
+        count: number;
+    }>>(new Map());
     const playNextInJamQueueRef = useRef<(() => void) | null>(null);
 
     useEffect(() => { queueRef.current = queue; }, [queue]);
@@ -535,13 +556,13 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // Pre-fetch the real Spotify user as soon as the provider mounts
     useEffect(() => {
-        ytEngine.onTrackEnded = () => {
+        localAudio.onTrackEnded = () => {
             if (refs.current.isHost) {
                 playNextInJamQueueRef.current?.();
             }
         };
-        ytEngine.onStateChange = (playing) => {
-            isPlayingYtRef.current = playing;
+        localAudio.onStateChange = (playing) => {
+            isPlayingLocalRef.current = playing;
             setIsPlaying(playing);
         };
 
@@ -560,9 +581,8 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 const patchChanged = data.patch !== undefined && data.patch !== CURRENT_PATCH;
                 if (versionChanged || patchChanged) {
                     setUpdateAvailable(true);
-                    console.log(`[Spicetify Jam] Update: ${data.version}${
-                        patchChanged && !versionChanged ? ' (hotfix ' + data.patch + ')' : ''
-                    }`);
+                    console.log(`[Spicetify Jam] Update: ${data.version}${patchChanged && !versionChanged ? ' (hotfix ' + data.patch + ')' : ''
+                        }`);
                 }
             } catch (e) {
                 console.warn('[Spicetify Jam] Failed to check for updates');
@@ -571,7 +591,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         checkUpdate();
         const cleanup = () => {
             if (peerRef.current && !peerRef.current.destroyed) {
-                try { peerRef.current.destroy(); } catch {}
+                try { peerRef.current.destroy(); } catch { }
             }
         };
         window.addEventListener('beforeunload', cleanup);
@@ -628,24 +648,24 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         let signalingReconnectCounter = 0;
         const id = setInterval(() => {
             const now = Date.now();
-            if (activeYtTrack.current) {
-                const status = ytEngine.getStatus();
+            if (activeLocalTrack.current) {
+                const status = localAudio.getStatus();
                 setProgress(status.currentMs);
                 if (status.durationMs > 0) {
                     setDuration(status.durationMs);
-                    if (activeYtTrack.current.duration !== status.durationMs) {
-                        activeYtTrack.current.duration = status.durationMs;
+                    if (activeLocalTrack.current.duration !== status.durationMs) {
+                        activeLocalTrack.current.duration = status.durationMs;
                         setNowPlaying(prev => prev ? { ...prev, duration: status.durationMs } : prev);
                     }
                 }
                 setIsPlaying(status.isPlaying);
-                ytEngine.syncVolume();
+                localAudio.syncVolume();
 
                 if (refs.current.isHost && status.isPlaying && conns.current.size > 0) {
                     tickCounter++;
                     if (tickCounter >= 6) {
                         tickCounter = 0;
-                        broadcast({ type: 'SYNC_TICK_YT', pos: status.currentMs, ts: now });
+                        broadcast({ type: 'SYNC_TICK_LOCAL', pos: status.currentMs, ts: now });
                     }
                 }
                 return;
@@ -691,7 +711,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                             signalingReconnectCounter++;
                             if (signalingReconnectCounter >= 5) { // retry reconnect every 2s
                                 signalingReconnectCounter = 0;
-                                try { peerRef.current.reconnect(); } catch {}
+                                try { peerRef.current.reconnect(); } catch { }
                             }
                         } else {
                             signalingReconnectCounter = 0;
@@ -703,11 +723,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                                     if (sock?._ws && sock._ws.readyState === WebSocket.OPEN) {
                                         sock._ws.send(JSON.stringify({ type: 'HEARTBEAT' }));
                                     }
-                                } catch {}
+                                } catch { }
                             }
                         }
                     }
-                } catch {}
+                } catch { }
             } else if (refs.current.connected) {
                 // Update progress/duration from local player for seek bar
                 try {
@@ -719,7 +739,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     // deliberate track change from a natural end-of-track advance
                     refs.current.lastProgress = p;
                     refs.current.lastDuration = d;
-                } catch {}
+                } catch { }
 
                 // Send high-frequency PING every ~2s (5 * 400ms) for accurate latency compensation
                 pingCounter++;
@@ -746,7 +766,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         refs.current.lastSyncRequestTs = now;
                         const c = hostConn(); if (c?.open) c.send({ type: 'SYNC' });
                     }
-                } catch {}
+                } catch { }
             }
         }, 400);
         return () => clearInterval(id);
@@ -800,7 +820,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const now = Date.now();
 
         currentQueue.forEach(t => {
-            if (t.isCustom || t.uri?.startsWith('jam:fake:') || t.isYouTube || t.uri?.startsWith('jam:yt:')) {
+            if (t.isCustom || t.uri?.startsWith('jam:fake:') || t.isLocalAudio || t.uri?.startsWith('jam:local:')) {
                 mergedQueue.push(t);
             } else if (t.uri === curPlayingUri) {
                 // If it is playing right now in Now Playing, do not keep in queue
@@ -833,15 +853,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
 
         const isDiff = JSON.stringify(mergedQueue.map(t => `${t.uri}|${t.title}|${t.artist}|${t.artUrl}`)) !==
-                       JSON.stringify(currentQueue.map(t => `${t.uri}|${t.title}|${t.artist}|${t.artUrl}`));
+            JSON.stringify(currentQueue.map(t => `${t.uri}|${t.title}|${t.artist}|${t.artUrl}`));
         if (isDiff) {
             queueRef.current = mergedQueue;
             setQueue(mergedQueue);
             broadcast({ type: 'Q', queue: mergedQueue });
         }
 
-        // Background resolve any remaining placeholder tracks in mergedQueue
-        const placeholders = mergedQueue.filter(t => !t.isCustom && !t.uri?.startsWith('jam:fake:') && !t.isYouTube && !t.uri?.startsWith('jam:yt:') && (!t.title || t.title === 'Added Track' || t.title === '?'));
+        const placeholders = mergedQueue.filter(t => !t.isCustom && !t.uri?.startsWith('jam:fake:') && !t.isLocalAudio && !t.uri?.startsWith('jam:local:') && (!t.title || t.title === 'Added Track' || t.title === '?'));
         if (placeholders.length > 0) {
             Promise.all(placeholders.map(p => getTrackDetails(p.uri))).then(resolved => {
                 let changed = false;
@@ -858,7 +877,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     setQueue(updated);
                     broadcast({ type: 'Q', queue: updated });
                 }
-            }).catch(() => {});
+            }).catch(() => { });
         }
     }, [broadcast]);
 
@@ -899,18 +918,18 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     queueRef.current = updated;
                     setQueue(updated);
                     broadcast({ type: 'Q', queue: updated });
-                } catch {}
+                } catch { }
 
                 pendingQueueRestore.current = [];
                 queueUserOrdered.current = 0;
                 setTimeout(refreshQueue, 600);
-                setTimeout(refreshQueue, 1500); 
-            } catch { 
-                Spicetify.showNotification('Failed to add to queue', true); 
+                setTimeout(refreshQueue, 1500);
+            } catch {
+                Spicetify.showNotification('Failed to add to queue', true);
             }
-        } else { 
-            const c = hostConn(); 
-            if (c?.open) { 
+        } else {
+            const c = hostConn();
+            if (c?.open) {
                 if (!cachedUser.current.name || cachedUser.current.name === 'Listener') {
                     cachedUser.current = await fetchUserAsync();
                 }
@@ -919,7 +938,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     try {
                         const meta = await getTrackDetails(uri);
                         if (meta && meta.title && meta.title !== 'Added Track') trackInfo = meta;
-                    } catch {}
+                    } catch { }
                     c.send({
                         type: 'ADD_Q',
                         uri,
@@ -927,7 +946,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         addedBy: { name: cachedUser.current.name, image: cachedUser.current.image }
                     });
                 });
-                Spicetify.showNotification(uriArray.length > 1 ? `Requested ${uriArray.length} tracks!` : 'Requested!'); 
+                Spicetify.showNotification(uriArray.length > 1 ? `Requested ${uriArray.length} tracks!` : 'Requested!');
             } else {
                 Spicetify.showNotification('Not connected to host — try rejoining the Jam', true);
             }
@@ -943,10 +962,10 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             queueRef.current = newQueue;
             setQueue(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
-            if (!uri.startsWith('jam:fake:') && !uri.startsWith('jam:yt:')) {
+            if (!uri.startsWith('jam:fake:') && !uri.startsWith('jam:local:')) {
                 try {
                     const qRes = await (Spicetify as any).Platform?.PlayerAPI?.getQueue?.();
-                    const matched = (qRes?.queued || []).filter((q: any) => 
+                    const matched = (qRes?.queued || []).filter((q: any) =>
                         q.uri === uri || q.track?.uri === uri || q.contextTrack?.uri === uri
                     );
                     if (matched.length > 0) {
@@ -956,17 +975,17 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         }));
                         await Spicetify.removeFromQueue(payload as any);
                         if ((Spicetify as any).Platform?.PlayerAPI?.removeFromQueue) {
-                            try { await (Spicetify as any).Platform.PlayerAPI.removeFromQueue(payload); } catch {}
+                            try { await (Spicetify as any).Platform.PlayerAPI.removeFromQueue(payload); } catch { }
                         }
                     } else {
                         const payload = uid ? [{ uri, uid }] : [{ uri }];
                         await Spicetify.removeFromQueue(payload as any);
                         if ((Spicetify as any).Platform?.PlayerAPI?.removeFromQueue) {
-                            try { await (Spicetify as any).Platform.PlayerAPI.removeFromQueue(payload); } catch {}
+                            try { await (Spicetify as any).Platform.PlayerAPI.removeFromQueue(payload); } catch { }
                         }
                     }
                 } catch {
-                    try { await Spicetify.removeFromQueue([{ uri }] as any); } catch {}
+                    try { await Spicetify.removeFromQueue([{ uri }] as any); } catch { }
                 }
             }
             queueUserOrdered.current = 0;
@@ -1022,97 +1041,97 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
     }, [broadcast, hostConn]);
 
-    const addYouTubeTrack = useCallback(async (urlOrId: string): Promise<boolean> => {
+    const sendLocalFileToPeer = useCallback(async (conn: DataConnection, localId: string) => {
+        try {
+            const buffer = await localAudio.getFileBuffer(localId);
+            if (!buffer || !conn.open) return;
+            const record = localAudio.getFileRecord(localId);
+            const CHUNK_SIZE = 48 * 1024;
+            const totalChunks = Math.ceil(buffer.byteLength / CHUNK_SIZE);
+
+            conn.send({
+                type: 'FILE_START',
+                localId,
+                title: record?.title || 'Unknown',
+                artist: record?.artist || 'Local Audio',
+                duration: record?.durationMs || 0,
+                mimeType: record?.mimeType || 'audio/mpeg',
+                totalChunks
+            });
+
+            for (let i = 0; i < totalChunks; i++) {
+                const chunkSlice = buffer.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+                conn.send({
+                    type: 'FILE_CHUNK',
+                    localId,
+                    chunkIndex: i,
+                    data: chunkSlice
+                });
+            }
+        } catch (e) {
+            console.error('[Jam Local Audio] Error sending file to peer:', e);
+        }
+    }, []);
+
+    const addLocalFileTrack = useCallback(async (file: File): Promise<boolean> => {
         if (!refs.current.isHost && !refs.current.guestCreateSong) {
             Spicetify.showNotification('Adding songs is disabled by Host', true);
             return false;
         }
 
-        const clean = urlOrId.trim();
-        if (!clean) return false;
-
-        let ytId: string | null = null;
         try {
-            if (/^[a-zA-Z0-9_-]{11}$/.test(clean)) {
-                ytId = clean;
+            const record = await localAudio.registerLocalFile(file);
+            const sender = {
+                name: cachedUser.current.name || (refs.current.isHost ? 'Host' : 'Guest'),
+                image: cachedUser.current.image || ''
+            };
+
+            const localTrack: TrackInfo = {
+                title: record.title,
+                artist: record.artist,
+                artUrl: '',
+                uri: record.localId,
+                localId: record.localId,
+                duration: record.durationMs,
+                isManual: true,
+                isCustom: false,
+                isLocalAudio: true,
+                addedBy: sender
+            };
+
+            if (refs.current.isHost) {
+                const updated = [...queueRef.current, localTrack];
+                queueRef.current = updated;
+                setQueue(updated);
+                broadcast({ type: 'Q', queue: updated });
+                queueUserOrdered.current = Date.now();
+                Spicetify.showNotification(`📁 Added "${record.title}" to Queue`);
+
+                // Send file data to connected peers
+                conns.current.forEach(c => {
+                    if (c.open) sendLocalFileToPeer(c, record.localId);
+                });
             } else {
-                const u = new URL(clean.startsWith('http') ? clean : `https://${clean}`);
-                if (u.hostname === 'youtu.be') {
-                    ytId = u.pathname.slice(1).split('/')[0].split('?')[0];
-                } else if (u.hostname.includes('youtube.com')) {
-                    if (u.pathname.startsWith('/shorts/') || u.pathname.startsWith('/embed/') || u.pathname.startsWith('/v/')) {
-                        ytId = u.pathname.split('/')[2]?.split('?')[0] || null;
-                    } else {
-                        ytId = u.searchParams.get('v');
-                    }
+                const c = hostConn();
+                if (c?.open) {
+                    c.send({
+                        type: 'ADD_LOCAL_FILE_Q',
+                        track: localTrack
+                    });
+                    sendLocalFileToPeer(c, record.localId);
+                    Spicetify.showNotification(`📁 Sent "${record.title}" to Host Queue`);
+                } else {
+                    Spicetify.showNotification('Not connected to Host', true);
+                    return false;
                 }
             }
-        } catch {}
-
-        if (!ytId) {
-            const match = clean.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?.*v=|embed\/|v\/|shorts\/)|music\.youtube\.com\/watch\?.*v=)([a-zA-Z0-9_-]{11})/);
-            ytId = match ? match[1] : null;
-        }
-
-        if (!ytId) {
-            Spicetify.showNotification('Invalid YouTube link or Video ID', true);
+            return true;
+        } catch (e) {
+            console.error('[Jam Local Audio] Error adding file:', e);
+            Spicetify.showNotification('Error reading local audio file', true);
             return false;
         }
-
-        const sender = {
-            name: cachedUser.current.name || (refs.current.isHost ? 'Host' : 'Guest'),
-            image: cachedUser.current.image || ''
-        };
-
-        const thumbnailUrl = `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`;
-        let title = `YouTube Track (${ytId})`;
-        let artist = 'YouTube';
-
-        try {
-            const resp = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${ytId}&format=json`);
-            if (resp.ok) {
-                const data = await resp.json();
-                if (data.title) title = data.title;
-                if (data.author_name) artist = data.author_name;
-            }
-        } catch (e) {
-            console.warn('[Jam] YouTube oEmbed fetch error, using fallback:', e);
-        }
-
-        const ytTrack: TrackInfo = {
-            title,
-            artist,
-            artUrl: thumbnailUrl,
-            uri: `jam:yt:${ytId}`,
-            ytId,
-            isManual: true,
-            isCustom: false,
-            isYouTube: true,
-            addedBy: sender
-        };
-
-        if (refs.current.isHost) {
-            const updated = [...queueRef.current, ytTrack];
-            queueRef.current = updated;
-            setQueue(updated);
-            broadcast({ type: 'Q', queue: updated });
-            queueUserOrdered.current = Date.now();
-            Spicetify.showNotification(`▶️ Added "${title}" to Queue`);
-        } else {
-            const c = hostConn();
-            if (c?.open) {
-                c.send({
-                    type: 'ADD_CUSTOM_Q',
-                    track: ytTrack
-                });
-                Spicetify.showNotification(`▶️ Sent "${title}" to Host Queue`);
-            } else {
-                Spicetify.showNotification('Not connected to Host', true);
-                return false;
-            }
-        }
-        return true;
-    }, [broadcast, hostConn]);
+    }, [broadcast, hostConn, sendLocalFileToPeer]);
 
     const moveInQueue = useCallback((from: number, to: number) => {
         if (!refs.current.isHost) {
@@ -1150,28 +1169,35 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }, 150);
     }, [broadcast, hostConn]);
 
-    const playYouTubeTrack = useCallback((track: TrackInfo, startMs: number = 0) => {
-        if (!track.ytId) return;
+    const playLocalAudioTrack = useCallback((track: TrackInfo, startMs: number = 0) => {
+        if (!track.localId) return;
 
         try {
             Spicetify.Player.pause();
-        } catch {}
+        } catch { }
 
-        activeYtTrack.current = track;
-        isPlayingYtRef.current = true;
+        activeLocalTrack.current = track;
+        isPlayingLocalRef.current = true;
         setNowPlaying(track);
         setIsPlaying(true);
         setProgress(startMs);
 
-        ytEngine.play(track.ytId, startMs);
+        localAudio.play(track.localId, startMs);
 
         if (refs.current.isHost) {
             broadcast({
-                type: 'PLAY_YT',
+                type: 'PLAY_LOCAL',
                 track,
-                ytId: track.ytId,
+                localId: track.localId,
                 pos: startMs,
                 ts: Date.now()
+            });
+
+            // Ensure peers have the file
+            conns.current.forEach(c => {
+                if (c.open && !localAudio.hasLocalFile(track.localId!)) {
+                    sendLocalFileToPeer(c, track.localId!);
+                }
             });
 
             const newQueue = queueRef.current.filter(t => t.uri !== track.uri);
@@ -1180,7 +1206,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             broadcast({ type: 'Q', queue: newQueue });
             queueUserOrdered.current = Date.now();
         }
-    }, [broadcast]);
+    }, [broadcast, sendLocalFileToPeer]);
 
     const jumpToTrack = useCallback((uri: string) => {
         if (uri.startsWith('jam:fake:')) {
@@ -1189,24 +1215,24 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             return;
         }
 
-        if (uri.startsWith('jam:yt:')) {
-            const ytTrack = queueRef.current.find(t => t.uri === uri);
-            if (ytTrack) {
+        if (uri.startsWith('jam:local:')) {
+            const localTrack = queueRef.current.find(t => t.uri === uri);
+            if (localTrack) {
                 if (refs.current.isHost) {
-                    playYouTubeTrack(ytTrack, 0);
+                    playLocalAudioTrack(localTrack, 0);
                 } else if (refs.current.guestControls) {
                     const c = hostConn();
-                    if (c?.open) c.send({ type: 'CMD', a: 'play_yt', uri });
+                    if (c?.open) c.send({ type: 'CMD', a: 'play_local', uri });
                 }
             }
             return;
         }
 
-        if (activeYtTrack.current) {
-            ytEngine.stop();
-            activeYtTrack.current = null;
-            isPlayingYtRef.current = false;
-            broadcast({ type: 'STOP_YT' });
+        if (activeLocalTrack.current) {
+            localAudio.stop();
+            activeLocalTrack.current = null;
+            isPlayingLocalRef.current = false;
+            broadcast({ type: 'STOP_LOCAL' });
         }
 
         if (refs.current.isHost) {
@@ -1220,40 +1246,40 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             queueUserOrdered.current = Date.now();
             Spicetify.Player.playUri(uri);
         }
-        else if (refs.current.guestControls) { 
-            const c = hostConn(); 
-            if (c?.open) c.send({ type: 'CMD', a: 'playuri', uri }); 
+        else if (refs.current.guestControls) {
+            const c = hostConn();
+            if (c?.open) c.send({ type: 'CMD', a: 'playuri', uri });
         }
-    }, [hostConn, broadcast, playYouTubeTrack]);
+    }, [hostConn, broadcast, playLocalAudioTrack]);
 
     const seekTo = useCallback((ms: number) => {
-        if (activeYtTrack.current) {
+        if (activeLocalTrack.current) {
             if (refs.current.isHost) {
-                ytEngine.seekTo(ms);
+                localAudio.seekTo(ms);
                 setProgress(ms);
-                broadcast({ type: 'SEEK_YT', pos: ms, ts: Date.now() });
+                broadcast({ type: 'SEEK_LOCAL', pos: ms, ts: Date.now() });
             } else if (refs.current.guestControls) {
                 const c = hostConn();
-                if (c?.open) c.send({ type: 'CMD', a: 'seek_yt', pos: ms });
+                if (c?.open) c.send({ type: 'CMD', a: 'seek_local', pos: ms });
             }
             return;
         }
 
-        if (refs.current.isHost) { 
-            Spicetify.Player.seek(ms); 
-            broadcast({ type: 'SEEK', pos: ms, ts: Date.now() }); 
+        if (refs.current.isHost) {
+            Spicetify.Player.seek(ms);
+            broadcast({ type: 'SEEK', pos: ms, ts: Date.now() });
         }
-        else if (refs.current.guestControls) { 
-            const c = hostConn(); 
-            if (c?.open) c.send({ type: 'CMD', a: 'seek', pos: ms }); 
+        else if (refs.current.guestControls) {
+            const c = hostConn();
+            if (c?.open) c.send({ type: 'CMD', a: 'seek', pos: ms });
         }
     }, [broadcast, hostConn]);
 
-    const toggleGuestControls = () => { 
-        if (!isHost) return; 
-        const v = !guestControls; 
-        setGuestControls(v); 
-        broadcast({ type: 'GCTRL', on: v }); 
+    const toggleGuestControls = () => {
+        if (!isHost) return;
+        const v = !guestControls;
+        setGuestControls(v);
+        broadcast({ type: 'GCTRL', on: v });
     };
 
     const toggleGuestCreateSong = () => {
@@ -1263,46 +1289,46 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         broadcast({ type: 'GCREATE', on: v });
     };
 
-    const play = () => { 
-        if (activeYtTrack.current) {
+    const play = () => {
+        if (activeLocalTrack.current) {
             if (refs.current.isHost) {
-                ytEngine.resume();
+                localAudio.resume();
                 setIsPlaying(true);
-                broadcast({ type: 'PS_YT', playing: true, pos: ytEngine.getStatus().currentMs, ts: Date.now() });
+                broadcast({ type: 'PS_LOCAL', playing: true, pos: localAudio.getStatus().currentMs, ts: Date.now() });
             } else if (refs.current.guestControls) {
                 const c = hostConn();
-                if (c?.open) c.send({ type: 'CMD', a: 'play_yt_toggle', playing: true });
+                if (c?.open) c.send({ type: 'CMD', a: 'play_local_toggle', playing: true });
             }
             return;
         }
 
-        if (refs.current.isHost) { 
-            Spicetify.Player.play(); 
-        } else if (refs.current.guestControls) { 
-            const c = hostConn(); 
-            if (c?.open) c.send({ type: 'CMD', a: 'play' }); 
-        } 
+        if (refs.current.isHost) {
+            Spicetify.Player.play();
+        } else if (refs.current.guestControls) {
+            const c = hostConn();
+            if (c?.open) c.send({ type: 'CMD', a: 'play' });
+        }
     };
 
-    const pause = () => { 
-        if (activeYtTrack.current) {
+    const pause = () => {
+        if (activeLocalTrack.current) {
             if (refs.current.isHost) {
-                ytEngine.pause();
+                localAudio.pause();
                 setIsPlaying(false);
-                broadcast({ type: 'PS_YT', playing: false, pos: ytEngine.getStatus().currentMs, ts: Date.now() });
+                broadcast({ type: 'PS_LOCAL', playing: false, pos: localAudio.getStatus().currentMs, ts: Date.now() });
             } else if (refs.current.guestControls) {
                 const c = hostConn();
-                if (c?.open) c.send({ type: 'CMD', a: 'play_yt_toggle', playing: false });
+                if (c?.open) c.send({ type: 'CMD', a: 'play_local_toggle', playing: false });
             }
             return;
         }
 
-        if (refs.current.isHost) { 
-            Spicetify.Player.pause(); 
-        } else if (refs.current.guestControls) { 
-            const c = hostConn(); 
-            if (c?.open) c.send({ type: 'CMD', a: 'pause' }); 
-        } 
+        if (refs.current.isHost) {
+            Spicetify.Player.pause();
+        } else if (refs.current.guestControls) {
+            const c = hostConn();
+            if (c?.open) c.send({ type: 'CMD', a: 'pause' });
+        }
     };
 
     // Stable callback — used by host next() AND guest CMD:next on host side
@@ -1311,11 +1337,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             // Find next real audio track to play
             const nextTrackIdx = queueRef.current.findIndex(t => !t.isCustom && !t.uri?.startsWith('jam:fake:'));
             if (nextTrackIdx < 0) {
-                if (activeYtTrack.current) {
-                    ytEngine.stop();
-                    activeYtTrack.current = null;
-                    isPlayingYtRef.current = false;
-                    broadcast({ type: 'STOP_YT' });
+                if (activeLocalTrack.current) {
+                    localAudio.stop();
+                    activeLocalTrack.current = null;
+                    isPlayingLocalRef.current = false;
+                    broadcast({ type: 'STOP_LOCAL' });
                 }
                 Spicetify.Player.next();
                 return;
@@ -1323,18 +1349,18 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
             const nextTrack = queueRef.current[nextTrackIdx];
 
-            // If next track is YouTube!
-            if (nextTrack.isYouTube || nextTrack.uri?.startsWith('jam:yt:')) {
-                playYouTubeTrack(nextTrack, 0);
+            // If next track is Local Audio!
+            if (nextTrack.isLocalAudio || nextTrack.uri?.startsWith('jam:local:')) {
+                playLocalAudioTrack(nextTrack, 0);
                 return;
             }
 
             // Next track is Spotify!
-            if (activeYtTrack.current) {
-                ytEngine.stop();
-                activeYtTrack.current = null;
-                isPlayingYtRef.current = false;
-                broadcast({ type: 'STOP_YT' });
+            if (activeLocalTrack.current) {
+                localAudio.stop();
+                activeLocalTrack.current = null;
+                isPlayingLocalRef.current = false;
+                broadcast({ type: 'STOP_LOCAL' });
             }
 
             refs.current.targetUri = nextTrack.uri!;
@@ -1354,48 +1380,48 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 Spicetify.Player.playUri(nextTrack.uri!);
             }
         } else {
-            if (activeYtTrack.current) {
-                ytEngine.stop();
-                activeYtTrack.current = null;
-                isPlayingYtRef.current = false;
-                broadcast({ type: 'STOP_YT' });
+            if (activeLocalTrack.current) {
+                localAudio.stop();
+                activeLocalTrack.current = null;
+                isPlayingLocalRef.current = false;
+                broadcast({ type: 'STOP_LOCAL' });
             }
             Spicetify.Player.next();
         }
-    }, [broadcast, playYouTubeTrack]);
+    }, [broadcast, playLocalAudioTrack]);
 
     useEffect(() => {
         playNextInJamQueueRef.current = playNextInJamQueue;
     }, [playNextInJamQueue]);
 
-    const next = () => { 
+    const next = () => {
         if (refs.current.isHost) playNextInJamQueue();
-        else if (refs.current.guestControls) { 
-            const c = hostConn(); 
-            if (c?.open) c.send({ type: 'CMD', a: 'next' }); 
-        } 
+        else if (refs.current.guestControls) {
+            const c = hostConn();
+            if (c?.open) c.send({ type: 'CMD', a: 'next' });
+        }
     };
 
-    const prev = () => { 
-        if (refs.current.isHost) Spicetify.Player.back(); 
-        else if (refs.current.guestControls) { 
-            const c = hostConn(); 
-            if (c?.open) c.send({ type: 'CMD', a: 'back' }); 
-        } 
+    const prev = () => {
+        if (refs.current.isHost) Spicetify.Player.back();
+        else if (refs.current.guestControls) {
+            const c = hostConn();
+            if (c?.open) c.send({ type: 'CMD', a: 'back' });
+        }
     };
 
-    const requestSync = () => { 
-        if (!refs.current.isHost) { 
-            const c = hostConn(); 
-            if (c?.open) c.send({ type: 'SYNC' }); 
-        } 
+    const requestSync = () => {
+        if (!refs.current.isHost) {
+            const c = hostConn();
+            if (c?.open) c.send({ type: 'SYNC' });
+        }
     };
 
     const leaveJam = useCallback(async (clearSavedSession = true) => {
-        if (activeYtTrack.current) {
-            ytEngine.stop();
-            activeYtTrack.current = null;
-            isPlayingYtRef.current = false;
+        if (activeLocalTrack.current) {
+            localAudio.stop();
+            activeLocalTrack.current = null;
+            isPlayingLocalRef.current = false;
         }
         // ── 1. Clear Spotify's native queue in ONE batched call ──
         const jamQueue = [...queueRef.current];
@@ -1404,7 +1430,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 await Spicetify.removeFromQueue(
                     jamQueue.map(t => ({ uri: t.uri, ...(t.uid ? { uid: t.uid } : {}) } as any))
                 );
-            } catch {}
+            } catch { }
         }
         try {
             const qRes = await (Spicetify as any).Platform?.PlayerAPI?.getQueue?.();
@@ -1417,11 +1443,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (toRemove.length > 0) {
                     await Spicetify.removeFromQueue(toRemove as any);
                     if ((Spicetify as any).Platform?.PlayerAPI?.removeFromQueue) {
-                        try { await (Spicetify as any).Platform.PlayerAPI.removeFromQueue(toRemove); } catch {}
+                        try { await (Spicetify as any).Platform.PlayerAPI.removeFromQueue(toRemove); } catch { }
                     }
                 }
             }
-        } catch {}
+        } catch { }
 
         // Cancel any pending debounced reorder sync
         if (reorderDebounce.current) { clearTimeout(reorderDebounce.current); reorderDebounce.current = null; }
@@ -1433,7 +1459,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 localStorage.removeItem('jam_saved_host_id');
                 localStorage.removeItem('jam_saved_host_ts');
                 setSavedSession(null);
-            } catch {}
+            } catch { }
         }
         setReconnecting(false);
         refs.current.reconnecting = false;
@@ -1443,20 +1469,20 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         activeGuestConn.current = null;
         pendingGuestConn.current = null;
-        conns.current.forEach(c => c.close()); 
-        conns.current.clear(); 
-        memberRegistry.current.clear(); 
-        peerRef.current?.destroy(); 
+        conns.current.forEach(c => c.close());
+        conns.current.clear();
+        memberRegistry.current.clear();
+        peerRef.current?.destroy();
         peerRef.current = null;
-        setConnected(false); 
-        setJamId(''); 
-        setIsHost(false); 
+        setConnected(false);
+        setJamId('');
+        setIsHost(false);
         setGuestControls(false);
         refs.current.guestControls = false;
         setGuestCreateSong(false);
         refs.current.guestCreateSong = false;
-        setMembers([]); 
-        setQueue([]); 
+        setMembers([]);
+        setQueue([]);
         queueRef.current = [];
         addedByMap.current.clear();
         recentlyAddedUris.current.clear();
@@ -1468,7 +1494,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         reconnectAttempt.current = 0;
         if (reconnectTimer.current) { clearTimeout(reconnectTimer.current); reconnectTimer.current = null; }
         if (songDebounce.current) { clearTimeout(songDebounce.current); songDebounce.current = null; }
-        seekTimers.current.forEach(clearTimeout); 
+        seekTimers.current.forEach(clearTimeout);
         seekTimers.current = [];
         cmdThrottle.current.clear();
         pendingQueueRestore.current = [];
@@ -1480,12 +1506,12 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const kickMember = (id: string) => {
         if (!isHost) return;
         const c = conns.current.get(id);
-        if (c) { 
-            c.send({ type: 'KICK' }); 
-            setTimeout(() => c.close(), 500); 
-            conns.current.delete(id); 
-            memberRegistry.current.delete(id); 
-            setMembers(buildMembers()); 
+        if (c) {
+            c.send({ type: 'KICK' });
+            setTimeout(() => c.close(), 500);
+            conns.current.delete(id);
+            memberRegistry.current.delete(id);
+            setMembers(buildMembers());
         }
     };
 
@@ -1501,7 +1527,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     if (pid !== conn.peer) {
                         const existingMem = memberRegistry.current.get(pid);
                         if (existingMem && existingMem.name === joinName) {
-                            try { existingConn.close(); } catch {}
+                            try { existingConn.close(); } catch { }
                             conns.current.delete(pid);
                             memberRegistry.current.delete(pid);
                         }
@@ -1509,22 +1535,25 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 });
                 conns.current.set(conn.peer, conn);
                 memberRegistry.current.set(conn.peer, { name: joinName, image: d.image || '' });
-                const all = buildMembers(); 
+                const all = buildMembers();
                 setMembers(all);
-                if (activeYtTrack.current) {
-                    const ytStat = ytEngine.getStatus();
+                if (activeLocalTrack.current) {
+                    const localStat = localAudio.getStatus();
                     conn.send({
-                        type: 'INIT', np: activeYtTrack.current, queue: queueRef.current, host: cachedUser.current.name,
-                        gc: r.guestControls, gcreate: r.guestCreateSong, playing: ytStat.isPlaying, members: all,
-                        progress: ytStat.currentMs, duration: ytStat.durationMs
+                        type: 'INIT', np: activeLocalTrack.current, queue: queueRef.current, host: cachedUser.current.name,
+                        gc: r.guestControls, gcreate: r.guestCreateSong, playing: localStat.isPlaying, members: all,
+                        progress: localStat.currentMs, duration: localStat.durationMs
                     });
                     conn.send({
-                        type: 'PLAY_YT',
-                        track: activeYtTrack.current,
-                        ytId: activeYtTrack.current.ytId,
-                        pos: ytStat.currentMs,
+                        type: 'PLAY_LOCAL',
+                        track: activeLocalTrack.current,
+                        localId: activeLocalTrack.current.localId,
+                        pos: localStat.currentMs,
                         ts: Date.now()
                     });
+                    if (activeLocalTrack.current.localId) {
+                        sendLocalFileToPeer(conn, activeLocalTrack.current.localId);
+                    }
                 } else {
                     conn.send({
                         type: 'INIT', np: getTrack(), queue: queueRef.current, host: cachedUser.current.name,
@@ -1547,12 +1576,19 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (d.np) {
                     setNowPlaying(d.np);
                     r.targetUri = d.np.uri;
-                    if (d.np.isYouTube || d.np.uri?.startsWith('jam:yt:')) {
-                        activeYtTrack.current = d.np;
-                        isPlayingYtRef.current = !!d.playing;
-                        if (d.playing && d.np.ytId) {
-                            try { Spicetify.Player.pause(); } catch {}
-                            ytEngine.play(d.np.ytId, d.progress || 0);
+                    if (d.np.isLocalAudio || d.np.uri?.startsWith('jam:local:')) {
+                        activeLocalTrack.current = d.np;
+                        isPlayingLocalRef.current = !!d.playing;
+                        if (d.np.localId) {
+                            try { Spicetify.Player.pause(); } catch { }
+                            if (localAudio.hasLocalFile(d.np.localId)) {
+                                if (d.playing) {
+                                    localAudio.play(d.np.localId, d.progress || 0);
+                                }
+                            } else {
+                                const c = hostConn();
+                                if (c?.open) c.send({ type: 'REQ_FILE', localId: d.np.localId });
+                            }
                         }
                     }
                 }
@@ -1572,7 +1608,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                             if (list.length > 5) list = list.slice(0, 5);
                             localStorage.setItem('jam_recent_rooms', JSON.stringify(list));
                         }
-                    } catch {}
+                    } catch { }
                 }
                 if (d.members) setMembers(d.members);
                 if (d.gc !== undefined) setGuestControls(d.gc);
@@ -1588,74 +1624,136 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (!r.isHost || !r.guestControls) return;
                 if (Date.now() - (cmdThrottle.current.get(conn.peer) || 0) < 500) return;
                 cmdThrottle.current.set(conn.peer, Date.now());
-                if (d.a === 'play') play(); 
+                if (d.a === 'play') play();
                 else if (d.a === 'pause') pause();
                 else if (d.a === 'next') playNextInJamQueue();
                 else if (d.a === 'back') Spicetify.Player.back();
                 else if (d.a === 'seek') seekTo(d.pos);
                 else if (d.a === 'playuri') jumpToTrack(d.uri);
-                else if (d.a === 'play_yt') jumpToTrack(d.uri);
-                else if (d.a === 'play_yt_toggle') {
+                else if (d.a === 'play_local') jumpToTrack(d.uri);
+                else if (d.a === 'play_local_toggle') {
                     if (d.playing) play(); else pause();
                 }
-                else if (d.a === 'seek_yt') seekTo(d.pos);
+                else if (d.a === 'seek_local') seekTo(d.pos);
                 break;
-            case 'PLAY_YT':
-                if (!r.isHost && d.track && d.ytId) {
-                    try { Spicetify.Player.pause(); } catch {}
-                    const isSameVideo = activeYtTrack.current?.ytId === d.ytId && isPlayingYtRef.current;
-                    activeYtTrack.current = d.track;
-                    isPlayingYtRef.current = true;
+            case 'PLAY_LOCAL':
+                if (!r.isHost && d.track && d.localId) {
+                    try { Spicetify.Player.pause(); } catch { }
+                    const isSameTrack = activeLocalTrack.current?.localId === d.localId && isPlayingLocalRef.current;
+                    activeLocalTrack.current = d.track;
+                    isPlayingLocalRef.current = true;
                     setNowPlaying(d.track);
                     setIsPlaying(true);
                     const now = Date.now();
                     const latency = r.ping > 0 ? (r.ping / 2) : Math.max(0, Math.min(now - (d.ts || now), 800));
                     const startMs = (d.pos || 0) + latency;
                     setProgress(startMs);
-                    if (!isSameVideo) {
-                        ytEngine.play(d.ytId, startMs);
-                    } else {
-                        const curStatus = ytEngine.getStatus();
-                        if (Math.abs(curStatus.currentMs - startMs) > 2500) {
-                            ytEngine.seekTo(startMs);
+
+                    if (localAudio.hasLocalFile(d.localId)) {
+                        if (!isSameTrack) {
+                            localAudio.play(d.localId, startMs);
+                        } else {
+                            const curStatus = localAudio.getStatus();
+                            if (Math.abs(curStatus.currentMs - startMs) > 2000) {
+                                localAudio.seekTo(startMs);
+                            }
                         }
+                    } else {
+                        const c = hostConn();
+                        if (c?.open) c.send({ type: 'REQ_FILE', localId: d.localId });
                     }
                 }
                 break;
-            case 'PS_YT':
-                if (!r.isHost && activeYtTrack.current) {
+            case 'PS_LOCAL':
+                if (!r.isHost && activeLocalTrack.current) {
                     if (d.playing) {
-                        ytEngine.resume();
+                        localAudio.resume();
                         setIsPlaying(true);
                     } else {
-                        ytEngine.pause();
+                        localAudio.pause();
                         setIsPlaying(false);
                     }
                     if (d.pos !== undefined) setProgress(d.pos);
                 }
                 break;
-            case 'SEEK_YT':
-                if (!r.isHost && activeYtTrack.current) {
-                    ytEngine.seekTo(d.pos);
+            case 'SEEK_LOCAL':
+                if (!r.isHost && activeLocalTrack.current) {
+                    localAudio.seekTo(d.pos);
                     setProgress(d.pos);
                 }
                 break;
-            case 'SYNC_TICK_YT':
-                if (!r.isHost && activeYtTrack.current) {
-                    const status = ytEngine.getStatus();
+            case 'SYNC_TICK_LOCAL':
+                if (!r.isHost && activeLocalTrack.current) {
+                    const status = localAudio.getStatus();
                     const now = Date.now();
                     const latency = r.ping > 0 ? (r.ping / 2) : Math.max(0, Math.min(now - (d.ts || now), 500));
                     const expectedPos = d.pos + latency;
                     const diff = Math.abs(status.currentMs - expectedPos);
                     if (diff > 1200) {
-                        ytEngine.seekTo(expectedPos);
+                        localAudio.seekTo(expectedPos);
                     }
                 }
                 break;
-            case 'STOP_YT':
-                ytEngine.stop();
-                activeYtTrack.current = null;
-                isPlayingYtRef.current = false;
+            case 'STOP_LOCAL':
+                localAudio.stop();
+                activeLocalTrack.current = null;
+                isPlayingLocalRef.current = false;
+                break;
+            case 'REQ_FILE':
+                if (d.localId) {
+                    sendLocalFileToPeer(conn, d.localId);
+                }
+                break;
+            case 'FILE_START': {
+                incomingFiles.current.set(d.localId, {
+                    title: d.title,
+                    artist: d.artist,
+                    duration: d.duration,
+                    mimeType: d.mimeType || 'audio/mpeg',
+                    totalChunks: d.totalChunks,
+                    receivedChunks: new Array(d.totalChunks).fill(null),
+                    count: 0
+                });
+                break;
+            }
+            case 'FILE_CHUNK': {
+                const incoming = incomingFiles.current.get(d.localId);
+                if (incoming && !incoming.receivedChunks[d.chunkIndex]) {
+                    incoming.receivedChunks[d.chunkIndex] = d.data;
+                    incoming.count++;
+                    if (incoming.count === incoming.totalChunks) {
+                        const blob = new Blob(incoming.receivedChunks as ArrayBuffer[], { type: incoming.mimeType });
+                        localAudio.saveRemoteBlob(
+                            d.localId,
+                            blob,
+                            incoming.title,
+                            incoming.artist,
+                            incoming.duration
+                        );
+                        incomingFiles.current.delete(d.localId);
+
+                        if (activeLocalTrack.current?.localId === d.localId && isPlayingLocalRef.current) {
+                            localAudio.play(d.localId, refs.current.lastProgress || 0);
+                        }
+                    }
+                }
+                break;
+            }
+            case 'ADD_LOCAL_FILE_Q':
+                if (r.isHost && d.track) {
+                    if (!r.guestCreateSong) return;
+                    const guestSender = memberRegistry.current.get(conn.peer) || d.track.addedBy;
+                    const trackWithSender: TrackInfo = {
+                        ...d.track,
+                        addedBy: guestSender || d.track.addedBy
+                    };
+                    const updated = [...queueRef.current, trackWithSender];
+                    queueRef.current = updated;
+                    setQueue(updated);
+                    broadcast({ type: 'Q', queue: updated });
+                    queueUserOrdered.current = Date.now();
+                    Spicetify.showNotification(`📁 ${guestSender?.name || 'Friend'} added "${d.track.title}" to Queue`);
+                }
                 break;
             // Guest requests queue reorder — throttled (800ms) + host runs the real moveInQueue
             case 'MOVE_Q': {
@@ -1698,7 +1796,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         const latency = r.ping > 0 ? (r.ping / 2) : Math.max(0, Math.min(now - d.ts, 500));
                         const hostPos = Number(d.pos || 0) + (d.paused ? 0 : latency);
                         let localPos = 0;
-                        try { localPos = Spicetify.Player.getProgress(); } catch {}
+                        try { localPos = Spicetify.Player.getProgress(); } catch { }
                         const drift = Math.abs(localPos - hostPos);
                         r.remotePlayTs = now;
                         r.lastSyncAppliedTs = now;
@@ -1758,7 +1856,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     const latency = r.ping > 0 ? (r.ping / 2) : Math.max(0, Math.min(now - d.ts, 500));
                     const expectedHostPos = Number(d.pos || 0) + latency;
                     let localPos = 0;
-                    try { localPos = Spicetify.Player.getProgress(); } catch {}
+                    try { localPos = Spicetify.Player.getProgress(); } catch { }
                     const currentDrift = Math.abs(localPos - expectedHostPos);
 
                     // Exponential moving average filter to smooth out momentary jitter
@@ -1796,11 +1894,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                             image: d.addedBy.image || memberRegistry.current.get(conn.peer)?.image || ''
                         }
                         : memberRegistry.current.get(conn.peer)
-                        ? {
-                            name: memberRegistry.current.get(conn.peer)!.name,
-                            image: memberRegistry.current.get(conn.peer)!.image
-                        }
-                        : undefined;
+                            ? {
+                                name: memberRegistry.current.get(conn.peer)!.name,
+                                image: memberRegistry.current.get(conn.peer)!.image
+                            }
+                            : undefined;
 
                     if (guestUser && d.uri) {
                         addedByMap.current.set(d.uri, guestUser);
@@ -1839,15 +1937,18 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
             case 'SYNC':
                 if (r.isHost) {
-                    if (activeYtTrack.current) {
-                        const ytStat = ytEngine.getStatus();
+                    if (activeLocalTrack.current) {
+                        const localStat = localAudio.getStatus();
                         conn.send({
-                            type: 'PLAY_YT',
-                            track: activeYtTrack.current,
-                            ytId: activeYtTrack.current.ytId,
-                            pos: ytStat.currentMs,
+                            type: 'PLAY_LOCAL',
+                            track: activeLocalTrack.current,
+                            localId: activeLocalTrack.current.localId,
+                            pos: localStat.currentMs,
                             ts: Date.now()
                         });
+                        if (activeLocalTrack.current.localId) {
+                            sendLocalFileToPeer(conn, activeLocalTrack.current.localId);
+                        }
                     } else if (Spicetify.Player.data?.item) {
                         const currentUri = Spicetify.Player.data.item.uri;
                         const currentPos = Spicetify.Player.getProgress();
@@ -1865,7 +1966,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 }
                 break;
         }
-    }, [broadcast, leaveJam, addToQueue, removeFromQueue, buildMembers, moveInQueue, playNextInJamQueue]);
+    }, [broadcast, leaveJam, addToQueue, removeFromQueue, buildMembers, moveInQueue, playNextInJamQueue, hostConn, sendLocalFileToPeer, jumpToTrack, seekTo, play, pause]);
     // Keep the ref in sync so setupConn's permanent handler always dispatches
     // to the latest onData closure (fixes stale ADD_Q / ADD on reconnects).
     onDataRef.current = onData;
@@ -1885,9 +1986,9 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // Dispatch through the stable ref so that existing connections
         // always call the latest onData even after re-renders update it.
         conn.on('data', (d: any) => onDataRef.current?.(d, conn));
-        conn.on('close', () => { 
-            conns.current.delete(conn.peer); 
-            memberRegistry.current.delete(conn.peer); 
+        conn.on('close', () => {
+            conns.current.delete(conn.peer);
+            memberRegistry.current.delete(conn.peer);
             if (refs.current.isHost) {
                 const updated = buildMembers();
                 setMembers(updated);
@@ -1920,11 +2021,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
 
         if (pendingGuestConn.current) {
-            try { pendingGuestConn.current.close(); } catch {}
+            try { pendingGuestConn.current.close(); } catch { }
             pendingGuestConn.current = null;
         }
         if (activeGuestConn.current) {
-            try { activeGuestConn.current.close(); } catch {}
+            try { activeGuestConn.current.close(); } catch { }
             activeGuestConn.current = null;
         }
         conns.current.clear();
@@ -1951,7 +2052,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setError(`Host disconnected, reconnecting... (${reconnectAttempt.current}/40)`);
 
             if (!peerRef.current || peerRef.current.destroyed || peerRef.current.disconnected || (reconnectAttempt.current % 5 === 0)) {
-                try { peerRef.current?.destroy(); } catch {}
+                try { peerRef.current?.destroy(); } catch { }
                 peerRef.current = new Peer(PEER_CONFIG);
             }
 
@@ -1972,16 +2073,16 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         if ((p as any)._connections?.has(targetHostId)) {
                             const existing = (p as any)._connections.get(targetHostId);
                             if (Array.isArray(existing)) {
-                                existing.forEach((c: any) => { try { c.close(); } catch {} });
+                                existing.forEach((c: any) => { try { c.close(); } catch { } });
                             } else if (existing?.close) {
-                                try { existing.close(); } catch {}
+                                try { existing.close(); } catch { }
                             }
                             (p as any)._connections.delete(targetHostId);
                         }
-                    } catch {}
+                    } catch { }
 
                     if (pendingGuestConn.current) {
-                        try { pendingGuestConn.current.close(); } catch {}
+                        try { pendingGuestConn.current.close(); } catch { }
                         pendingGuestConn.current = null;
                     }
 
@@ -1995,7 +2096,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         if (!connSettled && !isReconnected && pendingGuestConn.current === newConn) {
                             connSettled = true;
                             pendingGuestConn.current = null;
-                            try { newConn.close(); } catch {}
+                            try { newConn.close(); } catch { }
                             scheduleNext(2000);
                         }
                     }, 4500);
@@ -2035,7 +2136,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                                 clearInterval(joinRetryTimer);
                                 return;
                             }
-                            try { newConn.send({ type: 'JOIN', name: me.name, image: me.image }); } catch {}
+                            try { newConn.send({ type: 'JOIN', name: me.name, image: me.image }); } catch { }
                         }, 1200);
                     });
 
@@ -2103,7 +2204,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setError(`Re-hosting room ${targetId}...`);
         }
 
-        const p = new Peer(targetId, PEER_CONFIG); 
+        const p = new Peer(targetId, PEER_CONFIG);
         peerRef.current = p;
         return new Promise<void>((res, rej) => {
             p.on('open', id => {
@@ -2112,7 +2213,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 refs.current.connected = true;
                 refs.current.jamId = id;
                 refs.current.reconnecting = false;
-                if (!refs.current.sessionPinged) { refs.current.sessionPinged = true; try { navigator.sendBeacon("https://kyzen-vps-new-1.tail9c3971.ts.net/jam/ping", new Blob([JSON.stringify({ev:"session_start",v:"1.4.1",did:localStorage.getItem("jam_did")||"na",ts:Date.now()})],{type:"text/plain"})); } catch(_){} }
+                if (!refs.current.sessionPinged) { refs.current.sessionPinged = true; try { navigator.sendBeacon("https://kyzen-vps-new-1.tail9c3971.ts.net/jam/ping", new Blob([JSON.stringify({ ev: "session_start", v: "1.4.1", did: localStorage.getItem("jam_did") || "na", ts: Date.now() })], { type: "text/plain" })); } catch (_) { } }
                 try {
                     localStorage.setItem('jam_saved_session', JSON.stringify({ role: 'host', jamId: id, ts: Date.now() }));
                     localStorage.setItem('jam_saved_host_id', id);
@@ -2125,7 +2226,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     list.unshift({ jamId: id.toUpperCase(), hostName: `${me.name || 'You'} (Host)`, role: 'host', ts: Date.now() });
                     if (list.length > 5) list = list.slice(0, 5);
                     localStorage.setItem('jam_recent_rooms', JSON.stringify(list));
-                } catch {}
+                } catch { }
                 setJamId(id); setIsHost(true); setConnected(true); setError(null);
                 setReconnecting(false);
                 setHostName(me.name); setMembers([{ id: 'host', name: me.name, image: me.image, isHost: true, status: 'active' }]);
@@ -2144,30 +2245,30 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (refs.current.isHost && !p.destroyed) {
                     setTimeout(() => {
                         if (refs.current.isHost && !p.destroyed && p.disconnected) {
-                            try { p.reconnect(); } catch {}
+                            try { p.reconnect(); } catch { }
                         }
                     }, 1000);
                 }
             });
-            p.on('error', e => { 
+            p.on('error', e => {
                 const errType = (e as any).type;
-                if (errType === 'id-taken' && retries < 20) { 
-                    try { p.destroy(); } catch {}
+                if (errType === 'id-taken' && retries < 20) {
+                    try { p.destroy(); } catch { }
                     setError(`Waiting for previous room session to release (${retries + 1}/20)...`);
                     setTimeout(() => {
-                        startJam(targetId, retries + 1).then(res).catch(rej); 
+                        startJam(targetId, retries + 1).then(res).catch(rej);
                     }, 1500);
-                } else { 
+                } else {
                     if (refs.current.isHost && refs.current.connected) {
                         console.warn('[Jam] Host signaling error (recovering):', errType);
                         if (p.disconnected && !p.destroyed) {
-                            setTimeout(() => { try { p.reconnect(); } catch {} }, 2000);
+                            setTimeout(() => { try { p.reconnect(); } catch { } }, 2000);
                         }
                         return;
                     }
-                    setError(`Connection error: ${errType || 'unknown'}`); 
-                    rej(e); 
-                } 
+                    setError(`Connection error: ${errType || 'unknown'}`);
+                    rej(e);
+                }
             });
         });
     };
@@ -2180,7 +2281,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const cleanId = (id.includes('jam=') ? id.split('jam=')[1] : id).trim().toUpperCase();
         if (!cleanId) { setError('Please enter a Jam ID'); return; }
 
-        const p = new Peer(PEER_CONFIG); 
+        const p = new Peer(PEER_CONFIG);
         peerRef.current = p;
         return new Promise<void>((res, rej) => {
             let settled = false;
@@ -2213,7 +2314,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         refs.current.connected = true;
                         refs.current.jamId = cleanId;
                         refs.current.reconnecting = false;
-                        if (!refs.current.sessionPinged) { refs.current.sessionPinged = true; try { navigator.sendBeacon("https://kyzen-vps-new-1.tail9c3971.ts.net/jam/ping", new Blob([JSON.stringify({ev:"session_join",v:"1.4.1",did:localStorage.getItem("jam_did")||"na",ts:Date.now()})],{type:"text/plain"})); } catch(_){} }
+                        if (!refs.current.sessionPinged) { refs.current.sessionPinged = true; try { navigator.sendBeacon("https://kyzen-vps-new-1.tail9c3971.ts.net/jam/ping", new Blob([JSON.stringify({ ev: "session_join", v: "1.4.1", did: localStorage.getItem("jam_did") || "na", ts: Date.now() })], { type: "text/plain" })); } catch (_) { } }
                         try {
                             localStorage.setItem('jam_saved_session', JSON.stringify({ role: 'guest', jamId: cleanId, hostName: 'Host', ts: Date.now() }));
                             setSavedSession({ role: 'guest', jamId: cleanId, hostName: 'Host' });
@@ -2224,15 +2325,15 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                             list.unshift({ jamId: cleanId.toUpperCase(), hostName: 'Host', ts: Date.now() });
                             if (list.length > 5) list = list.slice(0, 5);
                             localStorage.setItem('jam_recent_rooms', JSON.stringify(list));
-                        } catch {}
-                        conns.current.set(cleanId, conn); 
-                        setJamId(cleanId); 
-                        setIsHost(false); 
-                        setConnected(true); 
+                        } catch { }
+                        conns.current.set(cleanId, conn);
+                        setJamId(cleanId);
+                        setIsHost(false);
+                        setConnected(true);
                         setReconnecting(false);
                         setError(null);
                         setMembers([{ id: cleanId, name: 'Host', isHost: true, status: 'active' }, { id: 'me', name: me.name, image: me.image, status: 'active' }]);
-                        conn.send({ type: 'JOIN', name: me.name, image: me.image }); 
+                        conn.send({ type: 'JOIN', name: me.name, image: me.image });
                         res();
                     });
                 });
@@ -2285,11 +2386,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             songDebounce.current = setTimeout(() => {
                 const uri = Spicetify.Player.data?.item?.uri;
                 if (refs.current.isHost) {
-                    if (activeYtTrack.current) {
-                        ytEngine.stop();
-                        activeYtTrack.current = null;
-                        isPlayingYtRef.current = false;
-                        broadcast({ type: 'STOP_YT' });
+                    if (activeLocalTrack.current) {
+                        localAudio.stop();
+                        activeLocalTrack.current = null;
+                        isPlayingLocalRef.current = false;
+                        broadcast({ type: 'STOP_LOCAL' });
                     }
                     // A context track "removed" from the Jam queue can't be removed
                     // natively, so Spotify may still reach it — skip it once. Explicit
@@ -2371,102 +2472,102 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             // fires. Defer by one microtask so the internal state has settled.
             // This is the root cause of the play→pause→play UI flicker.
             Promise.resolve().then(() => {
-            const playing = Spicetify.Player.isPlaying();
-            setIsPlaying(playing);
-            
-            if (refs.current.isHost) {
-                if (playing && activeYtTrack.current) {
-                    ytEngine.stop();
-                    activeYtTrack.current = null;
-                    isPlayingYtRef.current = false;
-                    broadcast({ type: 'STOP_YT' });
-                }
-                const pos = Spicetify.Player.getProgress();
-                const dur = Spicetify.Player.getDuration();
-                broadcast({ type: 'PS', p: playing, pos, dur, ts: Date.now() });
-                if (playing) {
-                    broadcast({ type: 'PLAY', uri: Spicetify.Player.data?.item?.uri || refs.current.targetUri || '', pos, ts: Date.now(), np: getTrack() });
-                } else {
-                    broadcast({ type: 'PAUSE' });
-                }
-            } else {
-                if (playing) {
-                    // Playback that we just started ourselves in response to a host
-                    // PLAY message — not the user pressing play. Accept it silently,
-                    // otherwise guests without controls force-pause every host play.
-                    const now = Date.now();
-                    // Suppress onplaypause fired by our own programmatic seek/play after
-                    // receiving a host PLAY — avoids the SYNC feedback loop.
-                    if (refs.current.ignoreNextOnPP) { refs.current.ignoreNextOnPP = false; return; }
-                    if (now - refs.current.remotePlayTs < 2000) return;
-                    if (now - refs.current.lastSyncAppliedTs < 2000) return;
-                    if (!refs.current.guestControls) {
-                        // Guard against re-entrant pause loop
-                        if (refs.current.forcingPause) return;
-                        refs.current.forcingPause = true;
-                        refs.current.ignoreNextOnPP = true; // suppress the pause event we're about to fire
-                        Spicetify.Player.pause();
-                        Spicetify.showNotification('🔒 Only the host can resume playback');
-                        setTimeout(() => { refs.current.forcingPause = false; }, 500);
-                        // Don't send SYNC here — it would cause host to reply PLAY{paused:false}
-                        // which would make us try to play again → another onPP → loop.
-                        // The drift interval (every 15s) will re-sync position organically.
+                const playing = Spicetify.Player.isPlaying();
+                setIsPlaying(playing);
+
+                if (refs.current.isHost) {
+                    if (playing && activeLocalTrack.current) {
+                        localAudio.stop();
+                        activeLocalTrack.current = null;
+                        isPlayingLocalRef.current = false;
+                        broadcast({ type: 'STOP_LOCAL' });
+                    }
+                    const pos = Spicetify.Player.getProgress();
+                    const dur = Spicetify.Player.getDuration();
+                    broadcast({ type: 'PS', p: playing, pos, dur, ts: Date.now() });
+                    if (playing) {
+                        broadcast({ type: 'PLAY', uri: Spicetify.Player.data?.item?.uri || refs.current.targetUri || '', pos, ts: Date.now(), np: getTrack() });
                     } else {
-                        // Guest with controls resumed — tell host our pos is in sync.
-                        // Only send SYNC if we're on the right track; if on wrong track,
-                        // snap back first (host PLAY reply will confirm position after snap).
-                        const c = hostConn();
-                        if (refs.current.targetUri) {
-                            const curUri = Spicetify.Player.data?.item?.uri;
-                            if (curUri && curUri !== refs.current.targetUri) {
-                                // Wrong track — snap back. Suppress the resulting events.
-                                refs.current.ignoreNextSongChange = true;
-                                refs.current.ignoreNextOnPP = true;
-                                refs.current.lastSyncAppliedTs = Date.now();
-                                Spicetify.Player.playUri(refs.current.targetUri).catch(() => {
-                                    refs.current.ignoreNextSongChange = false;
-                                    refs.current.ignoreNextOnPP = false;
-                                });
-                                Spicetify.showNotification('🔒 Locked to Jam');
-                            } else {
-                                // Right track — request a position sync from host.
-                                if (c?.open && now - refs.current.lastSyncRequestTs > 2500) {
-                                    refs.current.lastSyncRequestTs = now;
-                                    c.send({ type: 'SYNC' });
+                        broadcast({ type: 'PAUSE' });
+                    }
+                } else {
+                    if (playing) {
+                        // Playback that we just started ourselves in response to a host
+                        // PLAY message — not the user pressing play. Accept it silently,
+                        // otherwise guests without controls force-pause every host play.
+                        const now = Date.now();
+                        // Suppress onplaypause fired by our own programmatic seek/play after
+                        // receiving a host PLAY — avoids the SYNC feedback loop.
+                        if (refs.current.ignoreNextOnPP) { refs.current.ignoreNextOnPP = false; return; }
+                        if (now - refs.current.remotePlayTs < 2000) return;
+                        if (now - refs.current.lastSyncAppliedTs < 2000) return;
+                        if (!refs.current.guestControls) {
+                            // Guard against re-entrant pause loop
+                            if (refs.current.forcingPause) return;
+                            refs.current.forcingPause = true;
+                            refs.current.ignoreNextOnPP = true; // suppress the pause event we're about to fire
+                            Spicetify.Player.pause();
+                            Spicetify.showNotification('🔒 Only the host can resume playback');
+                            setTimeout(() => { refs.current.forcingPause = false; }, 500);
+                            // Don't send SYNC here — it would cause host to reply PLAY{paused:false}
+                            // which would make us try to play again → another onPP → loop.
+                            // The drift interval (every 15s) will re-sync position organically.
+                        } else {
+                            // Guest with controls resumed — tell host our pos is in sync.
+                            // Only send SYNC if we're on the right track; if on wrong track,
+                            // snap back first (host PLAY reply will confirm position after snap).
+                            const c = hostConn();
+                            if (refs.current.targetUri) {
+                                const curUri = Spicetify.Player.data?.item?.uri;
+                                if (curUri && curUri !== refs.current.targetUri) {
+                                    // Wrong track — snap back. Suppress the resulting events.
+                                    refs.current.ignoreNextSongChange = true;
+                                    refs.current.ignoreNextOnPP = true;
+                                    refs.current.lastSyncAppliedTs = Date.now();
+                                    Spicetify.Player.playUri(refs.current.targetUri).catch(() => {
+                                        refs.current.ignoreNextSongChange = false;
+                                        refs.current.ignoreNextOnPP = false;
+                                    });
+                                    Spicetify.showNotification('🔒 Locked to Jam');
+                                } else {
+                                    // Right track — request a position sync from host.
+                                    if (c?.open && now - refs.current.lastSyncRequestTs > 2500) {
+                                        refs.current.lastSyncRequestTs = now;
+                                        c.send({ type: 'SYNC' });
+                                    }
                                 }
+                            } else if (c?.open && now - refs.current.lastSyncRequestTs > 2500) {
+                                refs.current.lastSyncRequestTs = now;
+                                c.send({ type: 'SYNC' });
                             }
-                        } else if (c?.open && now - refs.current.lastSyncRequestTs > 2500) {
-                            refs.current.lastSyncRequestTs = now;
-                            c.send({ type: 'SYNC' });
                         }
                     }
                 }
-            }
             }); // end Promise.resolve().then — wait for Spotify's state to settle
         };
-        Spicetify.Player.addEventListener('songchange', onSong); 
+        Spicetify.Player.addEventListener('songchange', onSong);
         Spicetify.Player.addEventListener('onplaypause', onPP);
         let qi: ReturnType<typeof setInterval> | null = null;
         let driftI: ReturnType<typeof setInterval> | null = null;
         qi = refs.current.isHost ? setInterval(refreshQueue, 5000) : null;
-        driftI = !refs.current.isHost ? setInterval(() => { 
+        driftI = !refs.current.isHost ? setInterval(() => {
             const now = Date.now();
-            if (activeYtTrack.current) return;
+            if (activeLocalTrack.current) return;
             // Secondary safety check in case a heartbeat packet was dropped
             if (now - refs.current.remotePlayTs < 3000) return;
             if (now - refs.current.lastSyncAppliedTs < 3000) return;
             if (now - refs.current.lastSyncRequestTs < 5000) return;
-            const c = hostConn(); 
+            const c = hostConn();
             if (c?.open) {
                 refs.current.lastSyncRequestTs = now;
-                c.send({ type: 'SYNC' }); 
+                c.send({ type: 'SYNC' });
             }
         }, 6000) : null;
-        return () => { 
-            Spicetify.Player.removeEventListener('songchange', onSong); 
-            Spicetify.Player.removeEventListener('onplaypause', onPP); 
-            if (qi) clearInterval(qi); 
-            if (driftI) clearInterval(driftI); 
+        return () => {
+            Spicetify.Player.removeEventListener('songchange', onSong);
+            Spicetify.Player.removeEventListener('onplaypause', onPP);
+            if (qi) clearInterval(qi);
+            if (driftI) clearInterval(driftI);
         };
     }, [connected, isHost, broadcast, refreshQueue, hostConn, playNextInJamQueue]);
 
@@ -2503,7 +2604,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             console.warn('[Spicetify Jam] ContextMenu.Item registration failed', e);
         }
         return () => {
-            try { item?.deregister(); } catch {}
+            try { item?.deregister(); } catch { }
             ctxMenuItem.current = null;
         };
     }, []);
@@ -2519,7 +2620,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             guestControls, guestCreateSong, isPlaying, progress, duration, ping, updateAvailable,
             reconnecting, savedHostId, savedSession, resumeSession,
             startJam, joinJam, leaveJam, addToQueue, removeFromQueue,
-            addCustomTrack, addYouTubeTrack, moveInQueue, requestSync, jumpToTrack, seekTo, kickMember,
+            addCustomTrack, addLocalFileTrack, moveInQueue, requestSync, jumpToTrack, seekTo, kickMember,
             toggleGuestControls, toggleGuestCreateSong, play, pause, next, prev
         } as any}>
             {children}

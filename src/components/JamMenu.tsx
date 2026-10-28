@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { useJam } from '../JamContext';
-import { ytEngine } from '../services/YouTubeEngine';
 import QRCode from 'qrcode';
 
 const COLORS = [
@@ -43,7 +42,7 @@ const I = {
     chat: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>,
     plus: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
     clock: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
-    yt: <svg width="15" height="15" viewBox="0 0 24 24" fill="#ff0000"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>,
+    folder: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>,
 };
 
 const fmtTime = (ms: number) => {
@@ -144,8 +143,8 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const [showCustomForm, setShowCustomForm] = useState(false);
     const [customTitle, setCustomTitle] = useState('');
     const [customArtist, setCustomArtist] = useState('');
-    const [ytInput, setYtInput] = useState('');
-    const [isAddingYt, setIsAddingYt] = useState(false);
+    const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+    const [isAddingFiles, setIsAddingFiles] = useState(false);
     const [customHostCode, setCustomHostCode] = useState(() => {
         try {
             return localStorage.getItem('jam_custom_host_code') || '';
@@ -194,15 +193,21 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         setShowCustomForm(false);
     };
 
-    const handleAddYouTube = async () => {
-        const clean = ytInput.trim();
-        if (!clean || isAddingYt) return;
-        setIsAddingYt(true);
+    const handlePickLocalFiles = () => {
+        fileInputRef.current?.click();
+    };
+
+    const handleFilesSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files;
+        if (!files || files.length === 0) return;
+        setIsAddingFiles(true);
         try {
-            const ok = await j.addYouTubeTrack(clean);
-            if (ok) setYtInput('');
+            for (let i = 0; i < files.length; i++) {
+                await j.addLocalFileTrack(files[i]);
+            }
         } finally {
-            setIsAddingYt(false);
+            setIsAddingFiles(false);
+            if (fileInputRef.current) fileInputRef.current.value = '';
         }
     };
 
@@ -398,9 +403,9 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         </div>
                         <div className="jam-np-meta">
                             <div className="jam-np-label">
-                                {j.nowPlaying.isYouTube || j.nowPlaying.uri?.startsWith('jam:yt:') ? (
-                                    <span className={`jam-np-yt-badge ${ytEngine.getStatus().mode === 'direct' ? 'adfree' : ''}`}>
-                                        {ytEngine.getStatus().mode === 'direct' ? '⚡ 0% Ads Direct' : '▶ YouTube Stream'}
+                                {j.nowPlaying.isLocalAudio || j.nowPlaying.uri?.startsWith('jam:local:') ? (
+                                    <span className="jam-np-local-badge">
+                                        📁 Local Audio (0% Ads)
                                     </span>
                                 ) : (
                                     'Now Playing'
@@ -544,30 +549,25 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         )}
                     </div>
 
-                    {/* ── YouTube Link Input Bar ── */}
+                    {/* ── Local Audio File Picker Bar ── */}
                     {canCreateSong && (
-                        <div className="jam-yt-bar">
-                            <div className="jam-yt-input-wrap">
-                                <span className="jam-yt-icon">{I.yt}</span>
-                                <input
-                                    className="jam-yt-input"
-                                    placeholder="Paste YouTube link"
-                                    value={ytInput}
-                                    onChange={e => setYtInput(e.target.value)}
-                                    onKeyDown={e => { if (e.key === 'Enter') handleAddYouTube(); }}
-                                    disabled={isAddingYt}
-                                />
-                                {ytInput && (
-                                    <button className="jam-yt-clear" onClick={() => setYtInput('')}>×</button>
-                                )}
-                            </div>
+                        <div className="jam-local-bar">
+                            <input
+                                type="file"
+                                ref={fileInputRef}
+                                style={{ display: 'none' }}
+                                accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.aac"
+                                multiple
+                                onChange={handleFilesSelected}
+                            />
                             <button
-                                className="jam-yt-btn"
-                                onClick={handleAddYouTube}
-                                disabled={!ytInput.trim() || isAddingYt}
-                                title="Add YouTube song to Queue"
+                                className="jam-local-btn"
+                                onClick={handlePickLocalFiles}
+                                disabled={isAddingFiles}
+                                title="เลือกไฟล์เพลงในเครื่อง (.mp3, .wav, .flac, .m4a)"
                             >
-                                {isAddingYt ? <div className="jam-spinner-small" /> : I.plus}
+                                <span className="jam-local-icon">{I.folder}</span>
+                                <span>{isAddingFiles ? 'กำลังโหลดไฟล์...' : '📁 เลือกไฟล์เพลงในเครื่อง (Local Audio)'}</span>
                             </button>
                         </div>
                     )}
@@ -607,7 +607,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     {j.queue.length === 0 && !showCustomForm && (
                         <div style={{ textAlign: 'center', padding: '16px 8px', color: 'rgba(255,255,255,0.3)', fontSize: 12 }}>
                             {canCreateSong
-                                ? <>Queue is empty · Paste a YouTube link or add Spotify songs</>
+                                ? <>Queue is empty · Add local audio files or Spotify songs</>
                                 : 'Queue is empty'}
                         </div>
                     )}
@@ -615,7 +615,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     {j.queue.map((t, i) => (
                         <div
                             key={`${t.uri}-${i}`}
-                            className={`jam-q-row${dragIdx === i ? ' drag-src' : ''}${dragOverIdx === i && dragIdx !== i ? ' drag-over' : ''}${t.isCustom || t.uri?.startsWith('jam:fake:') ? ' jam-q-fake-row' : ''}${t.isYouTube || t.uri?.startsWith('jam:yt:') ? ' jam-q-yt-row' : ''}`}
+                            className={`jam-q-row${dragIdx === i ? ' drag-src' : ''}${dragOverIdx === i && dragIdx !== i ? ' drag-over' : ''}${t.isCustom || t.uri?.startsWith('jam:fake:') ? ' jam-q-fake-row' : ''}${t.isLocalAudio || t.uri?.startsWith('jam:local:') ? ' jam-q-local-row' : ''}`}
                             draggable={canEdit}
                             onDragStart={() => setDragIdx(i)}
                             onDragOver={e => { e.preventDefault(); setDragOverIdx(i); }}
@@ -644,12 +644,13 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                     <div className="jam-q-thumb-fake">
                                         {I.chat}
                                     </div>
+                                ) : (t.isLocalAudio || t.uri?.startsWith('jam:local:')) ? (
+                                    <div className="jam-q-thumb-local" title="Local Audio File">
+                                        {I.folder}
+                                    </div>
                                 ) : t.artUrl ? (
                                     <div className="jam-q-thumb-wrap">
                                         <img src={t.artUrl} alt="" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
-                                        {(t.isYouTube || t.uri?.startsWith('jam:yt:')) && (
-                                            <div className="jam-yt-badge" title="YouTube track">▶</div>
-                                        )}
                                     </div>
                                 ) : (
                                     <div className="jam-q-thumb-ph" />
@@ -667,6 +668,9 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                     title={canEdit && !t.isCustom && !t.uri?.startsWith('jam:fake:') ? 'Click to play' : undefined}
                                 >
                                     {t.title}
+                                    {(t.isLocalAudio || t.uri?.startsWith('jam:local:')) && (
+                                        <span className="jam-local-badge">Local</span>
+                                    )}
                                 </div>
                                 {(t.artist || t.addedBy) && (
                                     <div className="jam-q-artist-row">
