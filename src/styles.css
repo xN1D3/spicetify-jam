@@ -1022,3 +1022,103 @@ button.jam-playbar-btn.main-genericButton-buttonActive {
 .jam-q-yt-row:hover {
     background: rgba(255, 0, 0, 0.05) !important;
 }
+
+/* ── Floating YouTube PiP Player ───────────── */
+.jam-yt-pip-container {
+    position: fixed;
+    bottom: 96px;
+    left: 20px;
+    width: 320px;
+    background: #141414;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 12px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    z-index: 99999;
+    overflow: hidden;
+    display: none;
+    flex-direction: column;
+    transition: all 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: inherit;
+}
+
+.jam-yt-pip-container.active {
+    display: flex;
+    animation: fadeIn 0.2s ease-out;
+}
+
+.jam-yt-pip-container.minimized {
+    height: 32px;
+    width: 220px;
+    opacity: 0.85;
+}
+
+.jam-yt-pip-container.minimized:hover {
+    opacity: 1;
+}
+
+.jam-yt-pip-container.minimized .jam-yt-pip-body {
+    height: 1px;
+    opacity: 0.01;
+    pointer-events: none;
+}
+
+.jam-yt-pip-header {
+    height: 32px;
+    background: rgba(24, 24, 24, 0.95);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px;
+    user-select: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.jam-yt-pip-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.jam-yt-pip-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.jam-yt-pip-btn {
+    background: rgba(255, 255, 255, 0.08);
+    border: none;
+    color: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+}
+
+.jam-yt-pip-btn:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.jam-yt-pip-body {
+    width: 320px;
+    height: 180px;
+    background: #000;
+    position: relative;
+}
+
+.jam-yt-pip-body iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+}

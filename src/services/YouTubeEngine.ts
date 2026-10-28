@@ -1,5 +1,5 @@
 // YouTube Virtual Audio Engine for Spicetify Jam
-// Hybrid direct-iframe + postMessage + IFrame API with Error 153 referrer policy fixes
+// Hybrid direct-iframe + postMessage + IFrame API with Floating PiP Video Player
 
 export interface YouTubeEngineStatus {
     currentMs: number;
@@ -38,13 +38,36 @@ class YouTubeEngine {
             meta.content = 'strict-origin-when-cross-origin';
         } catch {}
 
-        // 2. Create or get offscreen container
+        // 2. Create or get floating PiP container
         let container = document.getElementById('jam-yt-container');
         if (!container) {
             container = document.createElement('div');
             container.id = 'jam-yt-container';
-            container.style.cssText = 'position:fixed;width:320px;height:240px;left:-9999px;top:-9999px;pointer-events:none;z-index:-9999;';
+            container.className = 'jam-yt-pip-container';
+            container.innerHTML = `
+                <div class="jam-yt-pip-header">
+                    <div class="jam-yt-pip-title">
+                        <span style="color:#ff0000;font-size:12px;">▶</span> YouTube Jam Player
+                    </div>
+                    <div class="jam-yt-pip-actions">
+                        <button class="jam-yt-pip-btn" id="jam-yt-pip-min" title="Minimize / Expand">_</button>
+                        <button class="jam-yt-pip-btn" id="jam-yt-pip-close" title="Hide video">✕</button>
+                    </div>
+                </div>
+                <div class="jam-yt-pip-body" id="jam-yt-pip-body"></div>
+            `;
             document.body.appendChild(container);
+
+            const minBtn = container.querySelector('#jam-yt-pip-min');
+            const closeBtn = container.querySelector('#jam-yt-pip-close');
+            minBtn?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                container?.classList.toggle('minimized');
+            });
+            closeBtn?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                container?.classList.add('minimized');
+            });
         }
 
         // 3. Global message listener for postMessage events from YouTube iframe
@@ -159,30 +182,29 @@ class YouTubeEngine {
             this.init();
             container = document.getElementById('jam-yt-container');
         }
-        if (!container) return;
+        if (container) {
+            container.classList.add('active');
+        }
+
+        const body = document.getElementById('jam-yt-pip-body');
+        if (!body) return;
 
         // Check if iframe exists
         let iframe = document.getElementById('jam-yt-iframe') as HTMLIFrameElement;
-        // Use youtube-nocookie and explicit widget_referrer to fix Error 153
         const targetSrc = `https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&enablejsapi=1&start=${startSec}&playsinline=1&widget_referrer=https://open.spotify.com`;
 
         if (!iframe) {
             iframe = document.createElement('iframe');
             iframe.id = 'jam-yt-iframe';
-            iframe.style.cssText = 'width:320px;height:240px;border:none;';
             iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
             (iframe as any).referrerPolicy = 'strict-origin-when-cross-origin';
             iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture');
             iframe.src = targetSrc;
-            container.innerHTML = '';
-            container.appendChild(iframe);
+            body.innerHTML = '';
+            body.appendChild(iframe);
             this.iframe = iframe;
         } else {
             this.iframe = iframe;
-            iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
-            (iframe as any).referrerPolicy = 'strict-origin-when-cross-origin';
-            iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture');
-            
             // If already loaded same video, just seek and play, do not reload!
             if (this.currentYtId === ytId && iframe.src.includes(`/embed/${ytId}`)) {
                 this.seekTo(startMs);
@@ -256,6 +278,11 @@ class YouTubeEngine {
         this.sendPostMessage('stopVideo');
         if (this.iframe) {
             this.iframe.src = 'about:blank';
+        }
+        const container = document.getElementById('jam-yt-container');
+        if (container) {
+            container.classList.remove('active');
+            container.classList.remove('minimized');
         }
         if (this.player && typeof this.player.stopVideo === 'function') {
             try { this.player.stopVideo(); } catch {}
