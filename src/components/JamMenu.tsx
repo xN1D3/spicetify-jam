@@ -42,7 +42,7 @@ const I = {
     chat: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>,
     plus: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
     clock: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
-    folder: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>,
+    folder: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" /></svg>,
 };
 
 const fmtTime = (ms: number) => {
@@ -404,13 +404,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         </div>
                         <div className="jam-np-meta">
                             <div className="jam-np-label">
-                                {j.nowPlaying.isLocalAudio || j.nowPlaying.uri?.startsWith('jam:local:') ? (
-                                    <span className="jam-np-local-badge">
-                                        📁 Local Audio (0% Ads)
-                                    </span>
-                                ) : (
-                                    'Now Playing'
-                                )}
+                                {j.nowPlaying.isLocalAudio || j.nowPlaying.uri?.startsWith('jam:local:') ? 'Local Audio' : 'Now Playing'}
                             </div>
                             <div className="jam-np-title">{j.nowPlaying.title}</div>
                             <div className="jam-np-artist">{j.nowPlaying.artist}</div>
@@ -506,6 +500,12 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                 <div className="jam-toggle-knob" />
                             </button>
                         </div>
+                        <div className="jam-setting-row">
+                            <span>Local Audio</span>
+                            <button className={`jam-toggle ${j.localAudioEnabled ? 'on' : ''}`} onClick={j.toggleLocalAudio}>
+                                <div className="jam-toggle-knob" />
+                            </button>
+                        </div>
                     </div>
                 )}
 
@@ -539,7 +539,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 <div
                     className={`jam-section-card${isDraggingFile ? ' jam-drop-active' : ''}`}
                     onDragOver={(e) => {
-                        if (e.dataTransfer.types.includes('Files')) {
+                        if (j.localAudioEnabled && canCreateSong && e.dataTransfer.types.includes('Files')) {
                             e.preventDefault();
                             setIsDraggingFile(true);
                         }
@@ -549,7 +549,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         setIsDraggingFile(false);
                     }}
                     onDrop={async (e) => {
-                        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        if (j.localAudioEnabled && canCreateSong && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
                             e.preventDefault();
                             setIsDraggingFile(false);
                             const files = Array.from(e.dataTransfer.files);
@@ -569,41 +569,39 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         }
                     }}
                 >
+                    <input
+                        type="file"
+                        ref={fileInputRef}
+                        style={{ display: 'none' }}
+                        accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.aac"
+                        multiple
+                        onChange={handleFilesSelected}
+                    />
+
                     <div className="jam-section-title" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                         <span className="jam-section-title-inner">{I.queue} Up Next · {j.queue.length}</span>
-                        {canCreateSong && (
-                            <button
-                                className={`jam-q-add-btn ${showCustomForm ? 'active' : ''}`}
-                                onClick={() => setShowCustomForm(v => !v)}
-                                title={showCustomForm ? 'Close' : 'Create Song'}
-                            >
-                                {showCustomForm ? I.x : I.plus}
-                            </button>
-                        )}
-                    </div>
-
-                    {/* ── Local Audio File Picker Bar ── */}
-                    {canCreateSong && (
-                        <div className="jam-local-bar">
-                            <input
-                                type="file"
-                                ref={fileInputRef}
-                                style={{ display: 'none' }}
-                                accept="audio/*,.mp3,.wav,.flac,.m4a,.ogg,.aac"
-                                multiple
-                                onChange={handleFilesSelected}
-                            />
-                            <button
-                                className="jam-local-btn"
-                                onClick={handlePickLocalFiles}
-                                disabled={isAddingFiles}
-                                title="เลือกไฟล์เพลงในเครื่อง หรือลากไฟล์มาวางตรงนี้ได้เลย (.mp3, .wav, .flac, .m4a)"
-                            >
-                                <span className="jam-local-icon">{I.folder}</span>
-                                <span>{isAddingFiles ? 'กำลังโหลดไฟล์...' : '📁 เลือกไฟล์เพลง หรือลากมาวาง (Drag & Drop)'}</span>
-                            </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            {j.localAudioEnabled && canCreateSong && (
+                                <button
+                                    className="jam-q-add-btn local-btn"
+                                    onClick={handlePickLocalFiles}
+                                    title="Local Audio (เลือกไฟล์เพลงในเครื่อง)"
+                                    disabled={isAddingFiles}
+                                >
+                                    {isAddingFiles ? <div className="jam-spinner-small" /> : I.folder}
+                                </button>
+                            )}
+                            {canCreateSong && (
+                                <button
+                                    className={`jam-q-add-btn ${showCustomForm ? 'active' : ''}`}
+                                    onClick={() => setShowCustomForm(v => !v)}
+                                    title={showCustomForm ? 'Close' : 'Create Song'}
+                                >
+                                    {showCustomForm ? I.x : I.plus}
+                                </button>
+                            )}
                         </div>
-                    )}
+                    </div>
 
                     {showCustomForm && (
                         <div className="jam-custom-form">

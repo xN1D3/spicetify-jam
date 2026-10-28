@@ -482,19 +482,13 @@
 .jam-q-btn.green:hover { background: rgba(29,185,84,0.25); color: #1ed760; transform: scale(1.08); }
 .jam-q-btn.red:hover   { background: rgba(232,68,68,0.22); color: #e84444; }
 
-.jam-np-local-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background: #1ed760;
-    color: #000;
-    font-size: 9px;
-    font-weight: 800;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    padding: 2px 6px;
-    border-radius: 4px;
-    box-shadow: 0 2px 6px rgba(30, 215, 96, 0.35);
+.jam-q-add-btn.local-btn {
+    color: #1ed760;
+}
+.jam-q-add-btn.local-btn:hover {
+    color: #1ed760;
+    background: rgba(30, 215, 96, 0.18);
+    transform: scale(1.08);
 }
 
 /* ── Custom / Fake Track (Chat via Queue) ── */

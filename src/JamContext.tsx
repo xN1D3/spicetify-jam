@@ -26,7 +26,7 @@ export interface LastSessionInfo {
 interface JamState {
     isHost: boolean; jamId: string; members: Member[]; connected: boolean; error: string | null;
     nowPlaying: TrackInfo | null; hostName: string; queue: TrackInfo[];
-    guestControls: boolean; guestCreateSong: boolean; isPlaying: boolean; progress: number; duration: number; ping: number;
+    guestControls: boolean; guestCreateSong: boolean; localAudioEnabled: boolean; isPlaying: boolean; progress: number; duration: number; ping: number;
     updateAvailable: boolean;
     reconnecting: boolean;
     savedHostId: string | null;
@@ -38,7 +38,7 @@ interface JamState {
     addLocalFileTrack: (file: File) => Promise<boolean>;
     moveInQueue: (from: number, to: number) => void; requestSync: () => void;
     jumpToTrack: (uri: string) => void; seekTo: (ms: number) => void;
-    kickMember: (id: string) => void; toggleGuestControls: () => void; toggleGuestCreateSong: () => void;
+    kickMember: (id: string) => void; toggleGuestControls: () => void; toggleGuestCreateSong: () => void; toggleLocalAudio: () => void;
     play: () => void; pause: () => void; next: () => void; prev: () => void;
 }
 
@@ -515,6 +515,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const [queue, setQueue] = useState<TrackInfo[]>([]);
     const [guestControls, setGuestControls] = useState(false);
     const [guestCreateSong, setGuestCreateSong] = useState(false);
+    const [localAudioEnabled, setLocalAudioEnabled] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
     const [progress, setProgress] = useState(0);
     const [duration, setDuration] = useState(0);
@@ -532,6 +533,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         reconnecting: false,
         guestControls: false,
         guestCreateSong: false,
+        localAudioEnabled: false,
         jamId: '',
         targetUri: null as string | null,
         ignoreNextSongChange: false,
@@ -652,6 +654,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, []);
     useEffect(() => { refs.current.guestControls = guestControls; }, [guestControls]);
     useEffect(() => { refs.current.guestCreateSong = guestCreateSong; }, [guestCreateSong]);
+    useEffect(() => { refs.current.localAudioEnabled = localAudioEnabled; }, [localAudioEnabled]);
     useEffect(() => { refs.current.jamId = jamId; }, [jamId]);
     useEffect(() => { refs.current.isPlaying = isPlaying; }, [isPlaying]);
 
@@ -1337,6 +1340,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         broadcast({ type: 'GCREATE', on: v });
     };
 
+    const toggleLocalAudio = () => {
+        if (!isHost) return;
+        const v = !localAudioEnabled;
+        setLocalAudioEnabled(v);
+        refs.current.localAudioEnabled = v;
+        broadcast({ type: 'GLOCAL', on: v });
+    };
+
     const play = () => {
         if (activeLocalTrack.current) {
             if (refs.current.isHost) {
@@ -1529,6 +1540,8 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         refs.current.guestControls = false;
         setGuestCreateSong(false);
         refs.current.guestCreateSong = false;
+        setLocalAudioEnabled(false);
+        refs.current.localAudioEnabled = false;
         setMembers([]);
         setQueue([]);
         queueRef.current = [];
@@ -1589,7 +1602,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     const localStat = localAudio.getStatus();
                     conn.send({
                         type: 'INIT', np: activeLocalTrack.current, queue: queueRef.current, host: cachedUser.current.name,
-                        gc: r.guestControls, gcreate: r.guestCreateSong, playing: localStat.isPlaying, members: all,
+                        gc: r.guestControls, gcreate: r.guestCreateSong, glocal: r.localAudioEnabled, playing: localStat.isPlaying, members: all,
                         progress: localStat.currentMs, duration: localStat.durationMs
                     });
                     conn.send({
@@ -1605,7 +1618,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 } else {
                     conn.send({
                         type: 'INIT', np: getTrack(), queue: queueRef.current, host: cachedUser.current.name,
-                        gc: r.guestControls, gcreate: r.guestCreateSong, playing: Spicetify.Player.isPlaying(), members: all,
+                        gc: r.guestControls, gcreate: r.guestCreateSong, glocal: r.localAudioEnabled, playing: Spicetify.Player.isPlaying(), members: all,
                         progress: Spicetify.Player.getProgress(), duration: Spicetify.Player.getDuration()
                     });
                     if (Spicetify.Player.data?.item) conn.send({ type: 'PLAY', uri: Spicetify.Player.data.item.uri, pos: Spicetify.Player.getProgress(), ts: Date.now(), paused: !Spicetify.Player.isPlaying() });
@@ -1661,6 +1674,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (d.members) setMembers(d.members);
                 if (d.gc !== undefined) setGuestControls(d.gc);
                 if (d.gcreate !== undefined) setGuestCreateSong(d.gcreate);
+                if (d.glocal !== undefined) setLocalAudioEnabled(d.glocal);
                 if (d.playing !== undefined) setIsPlaying(d.playing);
                 if (d.progress !== undefined) setProgress(d.progress);
                 if (d.duration !== undefined) setDuration(d.duration);
@@ -1668,6 +1682,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             case 'MEMBERS': setMembers(d.members); break;
             case 'GCTRL': setGuestControls(d.on); break;
             case 'GCREATE': setGuestCreateSong(d.on); break;
+            case 'GLOCAL': setLocalAudioEnabled(d.on); break;
             case 'CMD':
                 if (!r.isHost || !r.guestControls) return;
                 if (Date.now() - (cmdThrottle.current.get(conn.peer) || 0) < 500) return;
@@ -2665,11 +2680,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return (
         <Ctx.Provider value={{
             isHost, jamId, members, connected, error, nowPlaying, hostName, queue,
-            guestControls, guestCreateSong, isPlaying, progress, duration, ping, updateAvailable,
+            guestControls, guestCreateSong, localAudioEnabled, isPlaying, progress, duration, ping, updateAvailable,
             reconnecting, savedHostId, savedSession, resumeSession,
             startJam, joinJam, leaveJam, addToQueue, removeFromQueue,
             addCustomTrack, addLocalFileTrack, moveInQueue, requestSync, jumpToTrack, seekTo, kickMember,
-            toggleGuestControls, toggleGuestCreateSong, play, pause, next, prev
+            toggleGuestControls, toggleGuestCreateSong, toggleLocalAudio, play, pause, next, prev
         } as any}>
             {children}
         </Ctx.Provider>
