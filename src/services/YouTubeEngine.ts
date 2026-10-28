@@ -183,10 +183,11 @@ class YouTubeEngine {
             (iframe as any).referrerPolicy = 'strict-origin-when-cross-origin';
             iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture');
             
-            // If already loaded same video, just seek and play
-            if (iframe.src.includes(`/embed/${ytId}`)) {
+            // If already loaded same video, just seek and play, do not reload!
+            if (this.currentYtId === ytId && iframe.src.includes(`/embed/${ytId}`)) {
                 this.seekTo(startMs);
                 this.resume();
+                return;
             } else {
                 // Different video, reload iframe src directly
                 iframe.src = targetSrc;
@@ -229,12 +230,6 @@ class YouTubeEngine {
         setTimeout(() => this.syncVolume(), 400);
         setTimeout(() => this.syncVolume(), 1200);
         setTimeout(() => this.syncVolume(), 2500);
-
-        try {
-            if (typeof (Spicetify as any)?.showNotification === 'function') {
-                (Spicetify as any).showNotification(`▶️ Playing YouTube: ${ytId}`);
-            }
-        } catch {}
     }
 
     public resume() {

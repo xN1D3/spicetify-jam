@@ -1597,6 +1597,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             case 'PLAY_YT':
                 if (!r.isHost && d.track && d.ytId) {
                     try { Spicetify.Player.pause(); } catch {}
+                    const isSameVideo = activeYtTrack.current?.ytId === d.ytId && isPlayingYtRef.current;
                     activeYtTrack.current = d.track;
                     isPlayingYtRef.current = true;
                     setNowPlaying(d.track);
@@ -1605,7 +1606,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     const latency = r.ping > 0 ? (r.ping / 2) : Math.max(0, Math.min(now - (d.ts || now), 800));
                     const startMs = (d.pos || 0) + latency;
                     setProgress(startMs);
-                    ytEngine.play(d.ytId, startMs);
+                    if (!isSameVideo) {
+                        ytEngine.play(d.ytId, startMs);
+                    } else {
+                        const curStatus = ytEngine.getStatus();
+                        if (Math.abs(curStatus.currentMs - startMs) > 2500) {
+                            ytEngine.seekTo(startMs);
+                        }
+                    }
                 }
                 break;
             case 'PS_YT':
@@ -2437,6 +2445,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         qi = refs.current.isHost ? setInterval(refreshQueue, 5000) : null;
         driftI = !refs.current.isHost ? setInterval(() => { 
             const now = Date.now();
+            if (activeYtTrack.current) return;
             // Secondary safety check in case a heartbeat packet was dropped
             if (now - refs.current.remotePlayTs < 3000) return;
             if (now - refs.current.lastSyncAppliedTs < 3000) return;
