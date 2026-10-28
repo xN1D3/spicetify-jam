@@ -548,7 +548,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                 <span className="jam-yt-icon">{I.yt}</span>
                                 <input
                                     className="jam-yt-input"
-                                    placeholder="Paste YouTube link (https://youtu.be/...)"
+                                    placeholder="Paste YouTube link"
                                     value={ytInput}
                                     onChange={e => setYtInput(e.target.value)}
                                     onKeyDown={e => { if (e.key === 'Enter') handleAddYouTube(); }}
