@@ -1,5 +1,5 @@
 // YouTube Virtual Audio Engine for Spicetify Jam
-// Hybrid direct-iframe + postMessage + IFrame API for maximum reliability across CEF/Chromium
+// Hybrid direct-iframe + postMessage + IFrame API with Error 153 referrer policy fixes
 
 export interface YouTubeEngineStatus {
     currentMs: number;
@@ -27,7 +27,18 @@ class YouTubeEngine {
     private init() {
         if (typeof document === 'undefined') return;
 
-        // 1. Create or get offscreen container
+        // 1. Ensure meta referrer is strict-origin-when-cross-origin so CEF doesn't strip HTTP referrers
+        try {
+            let meta = document.querySelector('meta[name="referrer"]') as HTMLMetaElement;
+            if (!meta) {
+                meta = document.createElement('meta');
+                meta.name = 'referrer';
+                document.head.appendChild(meta);
+            }
+            meta.content = 'strict-origin-when-cross-origin';
+        } catch {}
+
+        // 2. Create or get offscreen container
         let container = document.getElementById('jam-yt-container');
         if (!container) {
             container = document.createElement('div');
@@ -36,7 +47,7 @@ class YouTubeEngine {
             document.body.appendChild(container);
         }
 
-        // 2. Global message listener for postMessage events from YouTube iframe
+        // 3. Global message listener for postMessage events from YouTube iframe
         if (!(window as any).__jamYtMessageListenerAdded) {
             (window as any).__jamYtMessageListenerAdded = true;
             window.addEventListener('message', (event) => {
@@ -68,12 +79,20 @@ class YouTubeEngine {
                         if (data.info.playerState !== undefined) {
                             this.isPlaying = data.info.playerState === 1;
                         }
+                    } else if (data.event === 'onError') {
+                        console.warn('[Jam YouTube] Error event from iframe:', data);
+                        const code = data.info || '';
+                        try {
+                            if (typeof (Spicetify as any)?.showNotification === 'function') {
+                                (Spicetify as any).showNotification(`⚠️ YouTube Error ${code} (Owner blocked embed or restricted)`, true);
+                            }
+                        } catch {}
                     }
                 } catch {}
             });
         }
 
-        // 3. Audio unlock listener on user click
+        // 4. Audio unlock listener on user click
         const unlockAudio = () => {
             if (this.isPlaying && this.currentYtId) {
                 this.resume();
@@ -82,7 +101,7 @@ class YouTubeEngine {
         };
         document.addEventListener('click', unlockAudio, { passive: true });
 
-        // 4. Load official API script in background for secondary control
+        // 5. Load official API script in background for secondary control
         if (!(window as any).YT) {
             const existingScript = document.getElementById('jam-yt-api-script');
             if (!existingScript) {
@@ -144,19 +163,26 @@ class YouTubeEngine {
 
         // Check if iframe exists
         let iframe = document.getElementById('jam-yt-iframe') as HTMLIFrameElement;
-        const targetSrc = `https://www.youtube.com/embed/${ytId}?autoplay=1&enablejsapi=1&start=${startSec}&playsinline=1&controls=0`;
+        // Use youtube-nocookie and explicit widget_referrer to fix Error 153
+        const targetSrc = `https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&enablejsapi=1&start=${startSec}&playsinline=1&widget_referrer=https://open.spotify.com`;
 
         if (!iframe) {
             iframe = document.createElement('iframe');
             iframe.id = 'jam-yt-iframe';
             iframe.style.cssText = 'width:320px;height:240px;border:none;';
-            iframe.setAttribute('allow', 'autoplay; encrypted-media');
+            iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+            (iframe as any).referrerPolicy = 'strict-origin-when-cross-origin';
+            iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture');
             iframe.src = targetSrc;
             container.innerHTML = '';
             container.appendChild(iframe);
             this.iframe = iframe;
         } else {
             this.iframe = iframe;
+            iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+            (iframe as any).referrerPolicy = 'strict-origin-when-cross-origin';
+            iframe.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture');
+            
             // If already loaded same video, just seek and play
             if (iframe.src.includes(`/embed/${ytId}`)) {
                 this.seekTo(startMs);
@@ -183,6 +209,15 @@ class YouTubeEngine {
                                 this.onStateChange?.(false);
                                 this.onTrackEnded?.();
                             }
+                        },
+                        onError: (err: any) => {
+                            console.warn('[Jam YouTube] YT.Player error:', err);
+                            const code = err.data || '';
+                            try {
+                                if (typeof (Spicetify as any)?.showNotification === 'function') {
+                                    (Spicetify as any).showNotification(`⚠️ YouTube Error ${code} (Blocked or restricted)`, true);
+                                }
+                            } catch {}
                         }
                     }
                 });
