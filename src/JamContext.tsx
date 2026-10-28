@@ -2,7 +2,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import Peer, { DataConnection } from 'peerjs';
 
-interface TrackInfo { title: string; artist: string; artUrl: string; uri?: string; uid?: string; isManual?: boolean; isCustom?: boolean; addedBy?: { name: string; image: string }; }
+interface TrackInfo { title: string; artist: string; artUrl: string; uri?: string; uid?: string; isManual?: boolean; isCustom?: boolean; isYouTube?: boolean; ytId?: string; addedBy?: { name: string; image: string }; }
 export interface Member { id: string; name: string; isHost?: boolean; image?: string; status?: 'active' | 'reconnecting' | 'disconnected'; }
 export interface LastSessionInfo {
     role: 'host' | 'guest';
@@ -22,6 +22,7 @@ interface JamState {
     startJam: (requestedId?: string) => Promise<void>; joinJam: (id: string, name?: string) => Promise<void>;
     leaveJam: (clearSavedSession?: boolean) => void; addToQueue: (uri: string | string[], sender?: { name: string; image: string }, preloadedMeta?: TrackInfo) => void; removeFromQueue: (uri: string, uid?: string) => void;
     addCustomTrack: (title: string, artist?: string) => void;
+    addYouTubeTrack: (urlOrId: string) => Promise<boolean>;
     moveInQueue: (from: number, to: number) => void; requestSync: () => void;
     jumpToTrack: (uri: string) => void; seekTo: (ms: number) => void;
     kickMember: (id: string) => void; toggleGuestControls: () => void; toggleGuestCreateSong: () => void;
@@ -762,7 +763,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const now = Date.now();
 
         currentQueue.forEach(t => {
-            if (t.isCustom || t.uri?.startsWith('jam:fake:')) {
+            if (t.isCustom || t.uri?.startsWith('jam:fake:') || t.isYouTube || t.uri?.startsWith('jam:yt:')) {
                 mergedQueue.push(t);
             } else if (t.uri === curPlayingUri) {
                 // If it is playing right now in Now Playing, do not keep in queue
@@ -803,7 +804,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
 
         // Background resolve any remaining placeholder tracks in mergedQueue
-        const placeholders = mergedQueue.filter(t => !t.isCustom && !t.uri?.startsWith('jam:fake:') && (!t.title || t.title === 'Added Track' || t.title === '?'));
+        const placeholders = mergedQueue.filter(t => !t.isCustom && !t.uri?.startsWith('jam:fake:') && !t.isYouTube && !t.uri?.startsWith('jam:yt:') && (!t.title || t.title === 'Added Track' || t.title === '?'));
         if (placeholders.length > 0) {
             Promise.all(placeholders.map(p => getTrackDetails(p.uri))).then(resolved => {
                 let changed = false;
@@ -905,7 +906,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             queueRef.current = newQueue;
             setQueue(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
-            if (!uri.startsWith('jam:fake:')) {
+            if (!uri.startsWith('jam:fake:') && !uri.startsWith('jam:yt:')) {
                 try {
                     const qRes = await (Spicetify as any).Platform?.PlayerAPI?.getQueue?.();
                     const matched = (qRes?.queued || []).filter((q: any) => 
@@ -982,6 +983,78 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 Spicetify.showNotification('Not connected to Host', true);
             }
         }
+    }, [broadcast, hostConn]);
+
+    const addYouTubeTrack = useCallback(async (urlOrId: string): Promise<boolean> => {
+        if (!refs.current.isHost && !refs.current.guestCreateSong) {
+            Spicetify.showNotification('Adding songs is disabled by Host', true);
+            return false;
+        }
+
+        const clean = urlOrId.trim();
+        if (!clean) return false;
+
+        const match = clean.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|music\.youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/);
+        const ytId = match ? match[1] : (/^[a-zA-Z0-9_-]{11}$/.test(clean) ? clean : null);
+
+        if (!ytId) {
+            Spicetify.showNotification('Invalid YouTube link or Video ID', true);
+            return false;
+        }
+
+        const sender = {
+            name: cachedUser.current.name || (refs.current.isHost ? 'Host' : 'Guest'),
+            image: cachedUser.current.image || ''
+        };
+
+        const thumbnailUrl = `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`;
+        let title = `YouTube Track (${ytId})`;
+        let artist = 'YouTube';
+
+        try {
+            const resp = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${ytId}&format=json`);
+            if (resp.ok) {
+                const data = await resp.json();
+                if (data.title) title = data.title;
+                if (data.author_name) artist = data.author_name;
+            }
+        } catch (e) {
+            console.warn('[Jam] YouTube oEmbed fetch error, using fallback:', e);
+        }
+
+        const ytTrack: TrackInfo = {
+            title,
+            artist,
+            artUrl: thumbnailUrl,
+            uri: `jam:yt:${ytId}`,
+            ytId,
+            isManual: true,
+            isCustom: false,
+            isYouTube: true,
+            addedBy: sender
+        };
+
+        if (refs.current.isHost) {
+            const updated = [...queueRef.current, ytTrack];
+            queueRef.current = updated;
+            setQueue(updated);
+            broadcast({ type: 'Q', queue: updated });
+            queueUserOrdered.current = Date.now();
+            Spicetify.showNotification(`▶️ Added "${title}" to Queue`);
+        } else {
+            const c = hostConn();
+            if (c?.open) {
+                c.send({
+                    type: 'ADD_CUSTOM_Q',
+                    track: ytTrack
+                });
+                Spicetify.showNotification(`▶️ Sent "${title}" to Host Queue`);
+            } else {
+                Spicetify.showNotification('Not connected to Host', true);
+                return false;
+            }
+        }
+        return true;
     }, [broadcast, hostConn]);
 
     const moveInQueue = useCallback((from: number, to: number) => {
@@ -2166,7 +2239,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             guestControls, guestCreateSong, isPlaying, progress, duration, ping, updateAvailable,
             reconnecting, savedHostId, savedSession, resumeSession,
             startJam, joinJam, leaveJam, addToQueue, removeFromQueue,
-            addCustomTrack, moveInQueue, requestSync, jumpToTrack, seekTo, kickMember,
+            addCustomTrack, addYouTubeTrack, moveInQueue, requestSync, jumpToTrack, seekTo, kickMember,
             toggleGuestControls, toggleGuestCreateSong, play, pause, next, prev
         } as any}>
             {children}

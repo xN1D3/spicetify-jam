@@ -41,7 +41,8 @@ const I = {
     resume: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></svg>,
     chat: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>,
     plus: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>,
-    clock: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>,
+    clock: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
+    yt: <svg width="15" height="15" viewBox="0 0 24 24" fill="#ff0000"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>,
 };
 
 const fmtTime = (ms: number) => {
@@ -142,6 +143,8 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const [showCustomForm, setShowCustomForm] = useState(false);
     const [customTitle, setCustomTitle] = useState('');
     const [customArtist, setCustomArtist] = useState('');
+    const [ytInput, setYtInput] = useState('');
+    const [isAddingYt, setIsAddingYt] = useState(false);
     const [customHostCode, setCustomHostCode] = useState(() => {
         try {
             return localStorage.getItem('jam_custom_host_code') || '';
@@ -149,44 +152,28 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             return '';
         }
     });
-
-    const loadRecentRooms = () => {
+    const [recentRooms, setRecentRooms] = useState<{ jamId: string; hostName?: string; ts: number }[]>(() => {
         try {
             const raw = localStorage.getItem('jam_recent_rooms');
-            let list: { jamId: string; hostName?: string; role?: string; ts: number }[] = raw ? JSON.parse(raw) : [];
-            if (list.length === 0) {
-                const sRaw = localStorage.getItem('jam_saved_session');
-                if (sRaw) {
-                    const s = JSON.parse(sRaw);
-                    if (s?.jamId) {
-                        list = [{
-                            jamId: s.jamId.toUpperCase(),
-                            hostName: s.role === 'host' ? `${s.hostName || 'You'} (Host)` : (s.hostName || 'Host'),
-                            role: s.role,
-                            ts: s.ts || Date.now()
-                        }];
-                        localStorage.setItem('jam_recent_rooms', JSON.stringify(list));
-                    }
-                }
-            }
-            return list;
+            return raw ? JSON.parse(raw) : [];
         } catch {
             return [];
         }
-    };
-
-    const [recentRooms, setRecentRooms] = useState<{ jamId: string; hostName?: string; role?: string; ts: number }[]>(loadRecentRooms);
+    });
 
     useEffect(() => {
-        setRecentRooms(loadRecentRooms());
-    }, [j.connected, j.savedSession]);
+        try {
+            const raw = localStorage.getItem('jam_recent_rooms');
+            if (raw) setRecentRooms(JSON.parse(raw));
+        } catch { }
+    }, [j.connected]);
 
     const handleCustomCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const clean = e.target.value.toUpperCase().replace(/[^A-Z0-9_-]/g, '').slice(0, 16);
         setCustomHostCode(clean);
         try {
             localStorage.setItem('jam_custom_host_code', clean);
-        } catch {}
+        } catch { }
     };
 
     const handleRemoveRecentRoom = (e: React.MouseEvent, jamId: string) => {
@@ -195,15 +182,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         setRecentRooms(updated);
         try {
             localStorage.setItem('jam_recent_rooms', JSON.stringify(updated));
-        } catch {}
-    };
-
-    const handleJoinRecentRoom = (room: { jamId: string; role?: string }) => {
-        if (room.role === 'host') {
-            j.startJam(room.jamId);
-        } else {
-            j.joinJam(room.jamId);
-        }
+        } catch { }
     };
 
     const handleAddCustom = () => {
@@ -212,6 +191,18 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         setCustomTitle('');
         setCustomArtist('');
         setShowCustomForm(false);
+    };
+
+    const handleAddYouTube = async () => {
+        const clean = ytInput.trim();
+        if (!clean || isAddingYt) return;
+        setIsAddingYt(true);
+        try {
+            const ok = await j.addYouTubeTrack(clean);
+            if (ok) setYtInput('');
+        } finally {
+            setIsAddingYt(false);
+        }
     };
 
     useEffect(() => {
@@ -296,7 +287,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             </span>
                         </button>
                     )}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                         <input
                             className="jam-input"
                             placeholder="Room Code (optional, e.g. ABC123)"
@@ -315,7 +306,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     <div className="jam-divider"><div className="jam-divider-line" /><span>or join one</span><div className="jam-divider-line" /></div>
                     <input className="jam-input" placeholder="Paste Jam ID or join link…" value={joinInput}
                         onChange={e => setJoinInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && j.joinJam(joinInput)} spellCheck={false} />
-                    <button className="jam-btn outline full" style={{ marginTop: 10 }} onClick={() => j.joinJam(joinInput)}>Join Session</button>
+                    <button className="jam-btn outline full" style={{ marginTop: 4 }} onClick={() => j.joinJam(joinInput)}>Join Session</button>
 
                     {recentRooms.length > 0 && (
                         <div className="jam-recent-section">
@@ -329,13 +320,13 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                     <div
                                         key={`${r.jamId}-${i}`}
                                         className="jam-recent-card"
-                                        onClick={() => handleJoinRecentRoom(r)}
-                                        title={`Click to connect ${r.jamId}`}
+                                        onClick={() => j.joinJam(r.jamId)}
+                                        title={`Click to join ${r.jamId}`}
                                     >
                                         <div className="jam-recent-icon">{I.clock}</div>
                                         <div className="jam-recent-info">
                                             <div className="jam-recent-id">{r.jamId}</div>
-                                            {r.hostName && <div className="jam-recent-host">{r.hostName}</div>}
+                                            {r.hostName && <div className="jam-recent-host">Host: {r.hostName}</div>}
                                         </div>
                                         <button
                                             className="jam-recent-del"
@@ -350,7 +341,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         </div>
                     )}
                     {j.error && <div className="jam-error">{I.warn} {j.error}</div>}
-                    <div style={{ textAlign: 'center', marginTop: 'auto', paddingTop: 20, paddingBottom: 6, fontSize: 11, color: 'rgba(255,255,255,0.25)' }}>
+                    <div style={{ textAlign: 'center', marginTop: 8, fontSize: 11, color: 'rgba(255,255,255,0.25)' }}>
                         Enjoying Jam? <a href="https://github.com/xN1D3/spicetify-jam" target="_blank" style={{ color: '#1db954', textDecoration: 'none' }}>⭐ Star us on GitHub</a>
                     </div>
                 </div>
@@ -544,6 +535,34 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         )}
                     </div>
 
+                    {/* ── YouTube Link Input Bar ── */}
+                    {canCreateSong && (
+                        <div className="jam-yt-bar">
+                            <div className="jam-yt-input-wrap">
+                                <span className="jam-yt-icon">{I.yt}</span>
+                                <input
+                                    className="jam-yt-input"
+                                    placeholder="Paste YouTube link (https://youtu.be/...)"
+                                    value={ytInput}
+                                    onChange={e => setYtInput(e.target.value)}
+                                    onKeyDown={e => { if (e.key === 'Enter') handleAddYouTube(); }}
+                                    disabled={isAddingYt}
+                                />
+                                {ytInput && (
+                                    <button className="jam-yt-clear" onClick={() => setYtInput('')}>×</button>
+                                )}
+                            </div>
+                            <button
+                                className="jam-yt-btn"
+                                onClick={handleAddYouTube}
+                                disabled={!ytInput.trim() || isAddingYt}
+                                title="Add YouTube song to Queue"
+                            >
+                                {isAddingYt ? <div className="jam-spinner-small" /> : I.plus}
+                            </button>
+                        </div>
+                    )}
+
                     {showCustomForm && (
                         <div className="jam-custom-form">
                             <div className="jam-custom-form-title">💬 Create Fake Song (Chat in Queue)</div>
@@ -578,14 +597,16 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
                     {j.queue.length === 0 && !showCustomForm && (
                         <div style={{ textAlign: 'center', padding: '16px 8px', color: 'rgba(255,255,255,0.3)', fontSize: 12 }}>
-                            Queue is empty
+                            {canCreateSong
+                                ? <>Queue is empty · Paste a YouTube link or add Spotify songs</>
+                                : 'Queue is empty'}
                         </div>
                     )}
 
                     {j.queue.map((t, i) => (
                         <div
                             key={`${t.uri}-${i}`}
-                            className={`jam-q-row${dragIdx === i ? ' drag-src' : ''}${dragOverIdx === i && dragIdx !== i ? ' drag-over' : ''}${t.isCustom || t.uri?.startsWith('jam:fake:') ? ' jam-q-fake-row' : ''}`}
+                            className={`jam-q-row${dragIdx === i ? ' drag-src' : ''}${dragOverIdx === i && dragIdx !== i ? ' drag-over' : ''}${t.isCustom || t.uri?.startsWith('jam:fake:') ? ' jam-q-fake-row' : ''}${t.isYouTube || t.uri?.startsWith('jam:yt:') ? ' jam-q-yt-row' : ''}`}
                             draggable={canEdit}
                             onDragStart={() => setDragIdx(i)}
                             onDragOver={e => { e.preventDefault(); setDragOverIdx(i); }}
@@ -600,7 +621,12 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                         {I.chat}
                                     </div>
                                 ) : t.artUrl ? (
-                                    <img src={t.artUrl} alt="" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                                    <div className="jam-q-thumb-wrap">
+                                        <img src={t.artUrl} alt="" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                                        {(t.isYouTube || t.uri?.startsWith('jam:yt:')) && (
+                                            <div className="jam-yt-badge" title="YouTube track">▶</div>
+                                        )}
+                                    </div>
                                 ) : (
                                     <div className="jam-q-thumb-ph" />
                                 )}
@@ -622,7 +648,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             </div>
                             {canEdit && (
                                 <div className="jam-q-btns">
-                                    {!t.isCustom && !t.uri?.startsWith('jam:fake:') && (
+                                    {!t.isCustom && !t.uri?.startsWith('jam:fake:') && !t.isYouTube && !t.uri?.startsWith('jam:yt:') && (
                                         <button className="jam-q-btn green" title="Play now" onClick={() => j.jumpToTrack(t.uri!)}>{I.playItem}</button>
                                     )}
                                     <button className="jam-q-btn red" title="Remove" onClick={() => j.removeFromQueue(t.uri!, t.uid)}>{I.x}</button>

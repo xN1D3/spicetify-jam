@@ -862,3 +862,147 @@ button.jam-playbar-btn.main-genericButton-buttonActive {
     background: rgba(255, 92, 92, 0.15);
     color: #ff5c5c;
 }
+
+/* ── YouTube Queue Integration ───────────────── */
+.jam-yt-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 14px 10px;
+}
+
+.jam-yt-input-wrap {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 8px;
+    padding: 0 10px;
+    transition: all 0.2s ease;
+}
+
+.jam-yt-input-wrap:focus-within {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 0, 0, 0.45);
+    box-shadow: 0 0 10px rgba(255, 0, 0, 0.12);
+}
+
+.jam-yt-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 8px;
+    flex-shrink: 0;
+}
+
+.jam-yt-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 7px 0;
+    font-family: inherit;
+}
+
+.jam-yt-input::placeholder {
+    color: rgba(255, 255, 255, 0.35);
+}
+
+.jam-yt-clear {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.3);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: color 0.15s;
+}
+
+.jam-yt-clear:hover {
+    color: #fff;
+}
+
+.jam-yt-btn {
+    width: 32px;
+    height: 30px;
+    background: #ff0000;
+    border: none;
+    border-radius: 8px;
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.18s ease;
+    flex-shrink: 0;
+    box-shadow: 0 2px 6px rgba(255, 0, 0, 0.3);
+}
+
+.jam-yt-btn:hover:not(:disabled) {
+    background: #e60000;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(255, 0, 0, 0.45);
+}
+
+.jam-yt-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.jam-spinner-small {
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: jamSpin 0.7s linear infinite;
+}
+
+@keyframes jamSpin {
+    to { transform: rotate(360deg); }
+}
+
+.jam-q-thumb-wrap {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.jam-q-thumb-wrap img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.jam-yt-badge {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    background: rgba(255, 0, 0, 0.9);
+    color: #fff;
+    font-size: 8px;
+    line-height: 1;
+    padding: 1px 3px;
+    border-radius: 3px;
+    font-weight: 900;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+    user-select: none;
+}
+
+.jam-q-yt-row {
+    background: rgba(255, 0, 0, 0.02);
+}
+
+.jam-q-yt-row:hover {
+    background: rgba(255, 0, 0, 0.05) !important;
+}
