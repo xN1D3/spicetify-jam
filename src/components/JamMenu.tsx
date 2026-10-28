@@ -396,7 +396,13 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             <div className="jam-np-art-overlay" />
                         </div>
                         <div className="jam-np-meta">
-                            <div className="jam-np-label">Now Playing</div>
+                            <div className="jam-np-label">
+                                {j.nowPlaying.isYouTube || j.nowPlaying.uri?.startsWith('jam:yt:') ? (
+                                    <span className="jam-np-yt-badge">▶ YouTube Stream</span>
+                                ) : (
+                                    'Now Playing'
+                                )}
+                            </div>
                             <div className="jam-np-title">{j.nowPlaying.title}</div>
                             <div className="jam-np-artist">{j.nowPlaying.artist}</div>
                         </div>
@@ -612,10 +618,25 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             onDragOver={e => { e.preventDefault(); setDragOverIdx(i); }}
                             onDrop={() => { if (dragIdx !== null && dragIdx !== i) j.moveInQueue(dragIdx, i); setDragIdx(null); setDragOverIdx(null); }}
                             onDragEnd={() => { setDragIdx(null); setDragOverIdx(null); }}
+                            onDoubleClick={() => {
+                                if (canEdit && !t.isCustom && !t.uri?.startsWith('jam:fake:')) {
+                                    j.jumpToTrack(t.uri!);
+                                }
+                            }}
+                            title={canEdit && !t.isCustom && !t.uri?.startsWith('jam:fake:') ? 'Double-click to play now' : undefined}
                         >
                             {canEdit && <div className="jam-drag-grip">{I.drag}</div>}
                             <div className="jam-q-num">{i + 1}</div>
-                            <div className="jam-q-thumb">
+                            <div
+                                className="jam-q-thumb"
+                                onClick={() => {
+                                    if (canEdit && !t.isCustom && !t.uri?.startsWith('jam:fake:')) {
+                                        j.jumpToTrack(t.uri!);
+                                    }
+                                }}
+                                style={{ cursor: canEdit && !t.isCustom && !t.uri?.startsWith('jam:fake:') ? 'pointer' : undefined }}
+                                title={canEdit && !t.isCustom && !t.uri?.startsWith('jam:fake:') ? 'Click to play' : undefined}
+                            >
                                 {t.isCustom || t.uri?.startsWith('jam:fake:') ? (
                                     <div className="jam-q-thumb-fake">
                                         {I.chat}
@@ -632,7 +653,18 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                 )}
                             </div>
                             <div className="jam-q-meta">
-                                <div className="jam-q-title">{t.title}</div>
+                                <div
+                                    className="jam-q-title"
+                                    onClick={() => {
+                                        if (canEdit && !t.isCustom && !t.uri?.startsWith('jam:fake:')) {
+                                            j.jumpToTrack(t.uri!);
+                                        }
+                                    }}
+                                    style={{ cursor: canEdit && !t.isCustom && !t.uri?.startsWith('jam:fake:') ? 'pointer' : undefined }}
+                                    title={canEdit && !t.isCustom && !t.uri?.startsWith('jam:fake:') ? 'Click to play' : undefined}
+                                >
+                                    {t.title}
+                                </div>
                                 {(t.artist || t.addedBy) && (
                                     <div className="jam-q-artist-row">
                                         {t.artist ? <span className="jam-q-artist">{t.artist}</span> : null}
@@ -648,7 +680,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             </div>
                             {canEdit && (
                                 <div className="jam-q-btns">
-                                    {!t.isCustom && !t.uri?.startsWith('jam:fake:') && !t.isYouTube && !t.uri?.startsWith('jam:yt:') && (
+                                    {!t.isCustom && !t.uri?.startsWith('jam:fake:') && (
                                         <button className="jam-q-btn green" title="Play now" onClick={() => j.jumpToTrack(t.uri!)}>{I.playItem}</button>
                                     )}
                                     <button className="jam-q-btn red" title="Remove" onClick={() => j.removeFromQueue(t.uri!, t.uid)}>{I.x}</button>

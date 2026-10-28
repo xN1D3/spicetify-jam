@@ -1,6 +1,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import Peer, { DataConnection } from 'peerjs';
+import { ytEngine } from './services/YouTubeEngine';
 
 interface TrackInfo { title: string; artist: string; artUrl: string; uri?: string; uid?: string; isManual?: boolean; isCustom?: boolean; isYouTube?: boolean; ytId?: string; addedBy?: { name: string; image: string }; }
 export interface Member { id: string; name: string; isHost?: boolean; image?: string; status?: 'active' | 'reconnecting' | 'disconnected'; }
@@ -522,6 +523,9 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const triggerGuestReconnectRef = useRef<((hostId: string) => void) | null>(null);
     const activeGuestConn = useRef<DataConnection | null>(null);
     const pendingGuestConn = useRef<DataConnection | null>(null);
+    const activeYtTrack = useRef<TrackInfo | null>(null);
+    const isPlayingYtRef = useRef<boolean>(false);
+    const playNextInJamQueueRef = useRef<(() => void) | null>(null);
 
     useEffect(() => { queueRef.current = queue; }, [queue]);
 
@@ -531,6 +535,16 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // Pre-fetch the real Spotify user as soon as the provider mounts
     useEffect(() => {
+        ytEngine.onTrackEnded = () => {
+            if (refs.current.isHost) {
+                playNextInJamQueueRef.current?.();
+            }
+        };
+        ytEngine.onStateChange = (playing) => {
+            isPlayingYtRef.current = playing;
+            setIsPlaying(playing);
+        };
+
         userPromise.current = fetchUserAsync();
         userPromise.current.then(u => { cachedUser.current = u; });
 
@@ -614,6 +628,23 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         let signalingReconnectCounter = 0;
         const id = setInterval(() => {
             const now = Date.now();
+            if (activeYtTrack.current) {
+                const status = ytEngine.getStatus();
+                setProgress(status.currentMs);
+                if (status.durationMs > 0) setDuration(status.durationMs);
+                setIsPlaying(status.isPlaying);
+                ytEngine.syncVolume();
+
+                if (refs.current.isHost && status.isPlaying && conns.current.size > 0) {
+                    tickCounter++;
+                    if (tickCounter >= 6) {
+                        tickCounter = 0;
+                        broadcast({ type: 'SYNC_TICK_YT', pos: status.currentMs, ts: now });
+                    }
+                }
+                return;
+            }
+
             if (refs.current.isHost) {
                 try {
                     const currentPlaying = Spicetify.Player.isPlaying();
@@ -994,8 +1025,28 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const clean = urlOrId.trim();
         if (!clean) return false;
 
-        const match = clean.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|music\.youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/);
-        const ytId = match ? match[1] : (/^[a-zA-Z0-9_-]{11}$/.test(clean) ? clean : null);
+        let ytId: string | null = null;
+        try {
+            if (/^[a-zA-Z0-9_-]{11}$/.test(clean)) {
+                ytId = clean;
+            } else {
+                const u = new URL(clean.startsWith('http') ? clean : `https://${clean}`);
+                if (u.hostname === 'youtu.be') {
+                    ytId = u.pathname.slice(1).split('/')[0].split('?')[0];
+                } else if (u.hostname.includes('youtube.com')) {
+                    if (u.pathname.startsWith('/shorts/') || u.pathname.startsWith('/embed/') || u.pathname.startsWith('/v/')) {
+                        ytId = u.pathname.split('/')[2]?.split('?')[0] || null;
+                    } else {
+                        ytId = u.searchParams.get('v');
+                    }
+                }
+            }
+        } catch {}
+
+        if (!ytId) {
+            const match = clean.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?.*v=|embed\/|v\/|shorts\/)|music\.youtube\.com\/watch\?.*v=)([a-zA-Z0-9_-]{11})/);
+            ytId = match ? match[1] : null;
+        }
 
         if (!ytId) {
             Spicetify.showNotification('Invalid YouTube link or Video ID', true);
@@ -1093,12 +1144,65 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }, 150);
     }, [broadcast, hostConn]);
 
+    const playYouTubeTrack = useCallback((track: TrackInfo, startMs: number = 0) => {
+        if (!track.ytId) return;
+
+        try {
+            Spicetify.Player.pause();
+        } catch {}
+
+        activeYtTrack.current = track;
+        isPlayingYtRef.current = true;
+        setNowPlaying(track);
+        setIsPlaying(true);
+        setProgress(startMs);
+
+        ytEngine.play(track.ytId, startMs);
+
+        if (refs.current.isHost) {
+            broadcast({
+                type: 'PLAY_YT',
+                track,
+                ytId: track.ytId,
+                pos: startMs,
+                ts: Date.now()
+            });
+
+            const newQueue = queueRef.current.filter(t => t.uri !== track.uri);
+            queueRef.current = newQueue;
+            setQueue(newQueue);
+            broadcast({ type: 'Q', queue: newQueue });
+            queueUserOrdered.current = Date.now();
+        }
+    }, [broadcast]);
+
     const jumpToTrack = useCallback((uri: string) => {
         if (uri.startsWith('jam:fake:')) {
             const fake = queueRef.current.find(t => t.uri === uri);
             Spicetify.showNotification(`💬 "${fake?.title || 'Fake Song'}" is a text message, not an audio track`);
             return;
         }
+
+        if (uri.startsWith('jam:yt:')) {
+            const ytTrack = queueRef.current.find(t => t.uri === uri);
+            if (ytTrack) {
+                if (refs.current.isHost) {
+                    playYouTubeTrack(ytTrack, 0);
+                } else if (refs.current.guestControls) {
+                    const c = hostConn();
+                    if (c?.open) c.send({ type: 'CMD', a: 'play_yt', uri });
+                }
+            }
+            return;
+        }
+
+        if (activeYtTrack.current) {
+            ytEngine.stop();
+            activeYtTrack.current = null;
+            isPlayingYtRef.current = false;
+            broadcast({ type: 'STOP_YT' });
+        }
+
         if (refs.current.isHost) {
             refs.current.targetUri = uri;
             const newQueue = queueRef.current.filter(t => t.uri !== uri);
@@ -1107,8 +1211,6 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             pendingQueueRestoreTs.current = Date.now();
             setQueue(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
-            // Lock the Jam queue so the 5s refreshQueue doesn't replace it with
-            // the standalone track's autoplay/radio before the restore finishes
             queueUserOrdered.current = Date.now();
             Spicetify.Player.playUri(uri);
         }
@@ -1116,9 +1218,21 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const c = hostConn(); 
             if (c?.open) c.send({ type: 'CMD', a: 'playuri', uri }); 
         }
-    }, [hostConn, broadcast]);
+    }, [hostConn, broadcast, playYouTubeTrack]);
 
     const seekTo = useCallback((ms: number) => {
+        if (activeYtTrack.current) {
+            if (refs.current.isHost) {
+                ytEngine.seekTo(ms);
+                setProgress(ms);
+                broadcast({ type: 'SEEK_YT', pos: ms, ts: Date.now() });
+            } else if (refs.current.guestControls) {
+                const c = hostConn();
+                if (c?.open) c.send({ type: 'CMD', a: 'seek_yt', pos: ms });
+            }
+            return;
+        }
+
         if (refs.current.isHost) { 
             Spicetify.Player.seek(ms); 
             broadcast({ type: 'SEEK', pos: ms, ts: Date.now() }); 
@@ -1144,6 +1258,18 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     const play = () => { 
+        if (activeYtTrack.current) {
+            if (refs.current.isHost) {
+                ytEngine.resume();
+                setIsPlaying(true);
+                broadcast({ type: 'PS_YT', playing: true, pos: ytEngine.getStatus().currentMs, ts: Date.now() });
+            } else if (refs.current.guestControls) {
+                const c = hostConn();
+                if (c?.open) c.send({ type: 'CMD', a: 'play_yt_toggle', playing: true });
+            }
+            return;
+        }
+
         if (refs.current.isHost) { 
             Spicetify.Player.play(); 
         } else if (refs.current.guestControls) { 
@@ -1153,6 +1279,18 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     const pause = () => { 
+        if (activeYtTrack.current) {
+            if (refs.current.isHost) {
+                ytEngine.pause();
+                setIsPlaying(false);
+                broadcast({ type: 'PS_YT', playing: false, pos: ytEngine.getStatus().currentMs, ts: Date.now() });
+            } else if (refs.current.guestControls) {
+                const c = hostConn();
+                if (c?.open) c.send({ type: 'CMD', a: 'play_yt_toggle', playing: false });
+            }
+            return;
+        }
+
         if (refs.current.isHost) { 
             Spicetify.Player.pause(); 
         } else if (refs.current.guestControls) { 
@@ -1167,14 +1305,33 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             // Find next real audio track to play
             const nextTrackIdx = queueRef.current.findIndex(t => !t.isCustom && !t.uri?.startsWith('jam:fake:'));
             if (nextTrackIdx < 0) {
-                // Only fake tracks in queue — none can be played as audio
+                if (activeYtTrack.current) {
+                    ytEngine.stop();
+                    activeYtTrack.current = null;
+                    isPlayingYtRef.current = false;
+                    broadcast({ type: 'STOP_YT' });
+                }
                 Spicetify.Player.next();
                 return;
             }
 
             const nextTrack = queueRef.current[nextTrackIdx];
+
+            // If next track is YouTube!
+            if (nextTrack.isYouTube || nextTrack.uri?.startsWith('jam:yt:')) {
+                playYouTubeTrack(nextTrack, 0);
+                return;
+            }
+
+            // Next track is Spotify!
+            if (activeYtTrack.current) {
+                ytEngine.stop();
+                activeYtTrack.current = null;
+                isPlayingYtRef.current = false;
+                broadcast({ type: 'STOP_YT' });
+            }
+
             refs.current.targetUri = nextTrack.uri!;
-            // Remove this audio track, KEEP all fake tracks and subsequent tracks
             const newQueue = queueRef.current.filter((_, i) => i !== nextTrackIdx);
             queueRef.current = newQueue;
             setQueue(newQueue);
@@ -1191,9 +1348,19 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 Spicetify.Player.playUri(nextTrack.uri!);
             }
         } else {
+            if (activeYtTrack.current) {
+                ytEngine.stop();
+                activeYtTrack.current = null;
+                isPlayingYtRef.current = false;
+                broadcast({ type: 'STOP_YT' });
+            }
             Spicetify.Player.next();
         }
-    }, [broadcast]);
+    }, [broadcast, playYouTubeTrack]);
+
+    useEffect(() => {
+        playNextInJamQueueRef.current = playNextInJamQueue;
+    }, [playNextInJamQueue]);
 
     const next = () => { 
         if (refs.current.isHost) playNextInJamQueue();
@@ -1219,6 +1386,11 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     const leaveJam = useCallback(async (clearSavedSession = true) => {
+        if (activeYtTrack.current) {
+            ytEngine.stop();
+            activeYtTrack.current = null;
+            isPlayingYtRef.current = false;
+        }
         // ── 1. Clear Spotify's native queue in ONE batched call ──
         const jamQueue = [...queueRef.current];
         if (jamQueue.length > 0) {
@@ -1333,12 +1505,28 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 memberRegistry.current.set(conn.peer, { name: joinName, image: d.image || '' });
                 const all = buildMembers(); 
                 setMembers(all);
-                conn.send({
-                    type: 'INIT', np: getTrack(), queue: queueRef.current, host: cachedUser.current.name,
-                    gc: r.guestControls, gcreate: r.guestCreateSong, playing: Spicetify.Player.isPlaying(), members: all,
-                    progress: Spicetify.Player.getProgress(), duration: Spicetify.Player.getDuration()
-                });
-                if (Spicetify.Player.data?.item) conn.send({ type: 'PLAY', uri: Spicetify.Player.data.item.uri, pos: Spicetify.Player.getProgress(), ts: Date.now(), paused: !Spicetify.Player.isPlaying() });
+                if (activeYtTrack.current) {
+                    const ytStat = ytEngine.getStatus();
+                    conn.send({
+                        type: 'INIT', np: activeYtTrack.current, queue: queueRef.current, host: cachedUser.current.name,
+                        gc: r.guestControls, gcreate: r.guestCreateSong, playing: ytStat.isPlaying, members: all,
+                        progress: ytStat.currentMs, duration: ytStat.durationMs
+                    });
+                    conn.send({
+                        type: 'PLAY_YT',
+                        track: activeYtTrack.current,
+                        ytId: activeYtTrack.current.ytId,
+                        pos: ytStat.currentMs,
+                        ts: Date.now()
+                    });
+                } else {
+                    conn.send({
+                        type: 'INIT', np: getTrack(), queue: queueRef.current, host: cachedUser.current.name,
+                        gc: r.guestControls, gcreate: r.guestCreateSong, playing: Spicetify.Player.isPlaying(), members: all,
+                        progress: Spicetify.Player.getProgress(), duration: Spicetify.Player.getDuration()
+                    });
+                    if (Spicetify.Player.data?.item) conn.send({ type: 'PLAY', uri: Spicetify.Player.data.item.uri, pos: Spicetify.Player.getProgress(), ts: Date.now(), paused: !Spicetify.Player.isPlaying() });
+                }
                 broadcast({ type: 'MEMBERS', members: all });
                 break;
             case 'INIT':
@@ -1383,22 +1571,66 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (!r.isHost || !r.guestControls) return;
                 if (Date.now() - (cmdThrottle.current.get(conn.peer) || 0) < 500) return;
                 cmdThrottle.current.set(conn.peer, Date.now());
-                if (d.a === 'play') Spicetify.Player.play(); else if (d.a === 'pause') Spicetify.Player.pause();
-                // next: use Jam queue order instead of Spotify's native queue
+                if (d.a === 'play') play(); 
+                else if (d.a === 'pause') pause();
                 else if (d.a === 'next') playNextInJamQueue();
                 else if (d.a === 'back') Spicetify.Player.back();
-                else if (d.a === 'seek') Spicetify.Player.seek(d.pos);
-                else if (d.a === 'playuri') {
-                    const newQueue = queueRef.current.filter(t => t.uri !== d.uri);
-                    queueRef.current = newQueue;
-                    pendingQueueRestore.current = newQueue;
-                    pendingQueueRestoreTs.current = Date.now();
-                    setQueue(newQueue);
-                    broadcast({ type: 'Q', queue: newQueue });
-                    refs.current.targetUri = d.uri;
-                    queueUserOrdered.current = Date.now();
-                    Spicetify.Player.playUri(d.uri);
+                else if (d.a === 'seek') seekTo(d.pos);
+                else if (d.a === 'playuri') jumpToTrack(d.uri);
+                else if (d.a === 'play_yt') jumpToTrack(d.uri);
+                else if (d.a === 'play_yt_toggle') {
+                    if (d.playing) play(); else pause();
                 }
+                else if (d.a === 'seek_yt') seekTo(d.pos);
+                break;
+            case 'PLAY_YT':
+                if (!r.isHost && d.track && d.ytId) {
+                    try { Spicetify.Player.pause(); } catch {}
+                    activeYtTrack.current = d.track;
+                    isPlayingYtRef.current = true;
+                    setNowPlaying(d.track);
+                    setIsPlaying(true);
+                    const now = Date.now();
+                    const latency = r.ping > 0 ? (r.ping / 2) : Math.max(0, Math.min(now - (d.ts || now), 800));
+                    const startMs = (d.pos || 0) + latency;
+                    setProgress(startMs);
+                    ytEngine.play(d.ytId, startMs);
+                }
+                break;
+            case 'PS_YT':
+                if (!r.isHost && activeYtTrack.current) {
+                    if (d.playing) {
+                        ytEngine.resume();
+                        setIsPlaying(true);
+                    } else {
+                        ytEngine.pause();
+                        setIsPlaying(false);
+                    }
+                    if (d.pos !== undefined) setProgress(d.pos);
+                }
+                break;
+            case 'SEEK_YT':
+                if (!r.isHost && activeYtTrack.current) {
+                    ytEngine.seekTo(d.pos);
+                    setProgress(d.pos);
+                }
+                break;
+            case 'SYNC_TICK_YT':
+                if (!r.isHost && activeYtTrack.current) {
+                    const status = ytEngine.getStatus();
+                    const now = Date.now();
+                    const latency = r.ping > 0 ? (r.ping / 2) : Math.max(0, Math.min(now - (d.ts || now), 500));
+                    const expectedPos = d.pos + latency;
+                    const diff = Math.abs(status.currentMs - expectedPos);
+                    if (diff > 1200) {
+                        ytEngine.seekTo(expectedPos);
+                    }
+                }
+                break;
+            case 'STOP_YT':
+                ytEngine.stop();
+                activeYtTrack.current = null;
+                isPlayingYtRef.current = false;
                 break;
             // Guest requests queue reorder — throttled (800ms) + host runs the real moveInQueue
             case 'MOVE_Q': {
@@ -1581,20 +1813,30 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 break;
             }
             case 'SYNC':
-                if (r.isHost && Spicetify.Player.data?.item) {
-                    const currentUri = Spicetify.Player.data.item.uri;
-                    const currentPos = Spicetify.Player.getProgress();
-                    const currentDur = Spicetify.Player.getDuration();
-                    // Lightweight same-track sync; avoid replaying/seeking guests unless truly needed
-                    conn.send({
-                        type: 'PLAY',
-                        uri: currentUri,
-                        pos: currentPos,
-                        ts: Date.now(),
-                        np: getTrack(),
-                        paused: !Spicetify.Player.isPlaying(),
-                        dur: currentDur,
-                    });
+                if (r.isHost) {
+                    if (activeYtTrack.current) {
+                        const ytStat = ytEngine.getStatus();
+                        conn.send({
+                            type: 'PLAY_YT',
+                            track: activeYtTrack.current,
+                            ytId: activeYtTrack.current.ytId,
+                            pos: ytStat.currentMs,
+                            ts: Date.now()
+                        });
+                    } else if (Spicetify.Player.data?.item) {
+                        const currentUri = Spicetify.Player.data.item.uri;
+                        const currentPos = Spicetify.Player.getProgress();
+                        const currentDur = Spicetify.Player.getDuration();
+                        conn.send({
+                            type: 'PLAY',
+                            uri: currentUri,
+                            pos: currentPos,
+                            ts: Date.now(),
+                            np: getTrack(),
+                            paused: !Spicetify.Player.isPlaying(),
+                            dur: currentDur,
+                        });
+                    }
                 }
                 break;
         }
@@ -2018,6 +2260,12 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             songDebounce.current = setTimeout(() => {
                 const uri = Spicetify.Player.data?.item?.uri;
                 if (refs.current.isHost) {
+                    if (activeYtTrack.current) {
+                        ytEngine.stop();
+                        activeYtTrack.current = null;
+                        isPlayingYtRef.current = false;
+                        broadcast({ type: 'STOP_YT' });
+                    }
                     // A context track "removed" from the Jam queue can't be removed
                     // natively, so Spotify may still reach it — skip it once. Explicit
                     // plays (targetUri already set to it) are respected.
@@ -2102,6 +2350,12 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setIsPlaying(playing);
             
             if (refs.current.isHost) {
+                if (playing && activeYtTrack.current) {
+                    ytEngine.stop();
+                    activeYtTrack.current = null;
+                    isPlayingYtRef.current = false;
+                    broadcast({ type: 'STOP_YT' });
+                }
                 const pos = Spicetify.Player.getProgress();
                 const dur = Spicetify.Player.getDuration();
                 broadcast({ type: 'PS', p: playing, pos, dur, ts: Date.now() });
