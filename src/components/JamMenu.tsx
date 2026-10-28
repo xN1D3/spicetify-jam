@@ -564,7 +564,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                     setIsAddingFiles(false);
                                 }
                             } else {
-                                Spicetify.showNotification('กรุณาวางไฟล์เพลง (.mp3, .wav, .flac, .m4a)', true);
+                                Spicetify.showNotification('Please drop audio files (.mp3, .wav, .flac, .m4a)', true);
                             }
                         }
                     }}
@@ -585,7 +585,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                 <button
                                     className="jam-q-add-btn local-btn"
                                     onClick={handlePickLocalFiles}
-                                    title="Local Audio (เลือกไฟล์เพลงในเครื่อง)"
+                                    title="Local Audio (Add local audio files)"
                                     disabled={isAddingFiles}
                                 >
                                     {isAddingFiles ? <div className="jam-spinner-small" /> : I.folder}
@@ -637,9 +637,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
                     {j.queue.length === 0 && !showCustomForm && (
                         <div style={{ textAlign: 'center', padding: '16px 8px', color: 'rgba(255,255,255,0.3)', fontSize: 12 }}>
-                            {canCreateSong
-                                ? <>คิวว่าง · ลากไฟล์เพลง (.mp3) มาวาง หรือเพิ่มเพลง Spotify ได้เลย</>
-                                : 'Queue is empty'}
+                            Queue is empty
                         </div>
                     )}
 
