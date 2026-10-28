@@ -1,5 +1,5 @@
 // YouTube Virtual Audio Engine for Spicetify Jam
-// Hybrid direct-iframe + postMessage + IFrame API with Floating PiP Video Player
+// Dual-Mode: Direct Audio Stream (0% Ads, Pure Audio) with IFrame PiP Fallback
 
 export interface YouTubeEngineStatus {
     currentMs: number;
@@ -7,16 +7,25 @@ export interface YouTubeEngineStatus {
     isPlaying: boolean;
     isReady: boolean;
     ytId: string | null;
+    mode: 'direct' | 'iframe' | 'none';
 }
 
 class YouTubeEngine {
+    private audioElement: HTMLAudioElement | null = null;
     private iframe: HTMLIFrameElement | null = null;
     private player: any = null;
+    private mode: 'direct' | 'iframe' | 'none' = 'none';
+
     private isReady = false;
     private currentYtId: string | null = null;
     private isPlaying = false;
     private cachedDurationMs = 0;
     private cachedCurrentMs = 0;
+
+    // Cache visitorData for Innertube
+    private visitorData: string | null = null;
+    private visitorDataExpiresAt = 0;
+
     public onTrackEnded: (() => void) | null = null;
     public onStateChange: ((isPlaying: boolean) => void) | null = null;
 
@@ -38,7 +47,10 @@ class YouTubeEngine {
             meta.content = 'strict-origin-when-cross-origin';
         } catch {}
 
-        // 2. Create or get floating PiP container
+        // 2. Pre-create HTML5 audio element
+        this.getOrCreateAudioElement();
+
+        // 3. Create or get floating PiP container
         let container = document.getElementById('jam-yt-container');
         if (!container) {
             container = document.createElement('div');
@@ -46,8 +58,8 @@ class YouTubeEngine {
             container.className = 'jam-yt-pip-container';
             container.innerHTML = `
                 <div class="jam-yt-pip-header">
-                    <div class="jam-yt-pip-title">
-                        <span style="color:#ff0000;font-size:12px;">▶</span> YouTube Jam Player
+                    <div class="jam-yt-pip-title" id="jam-yt-pip-title">
+                        <span style="color:#1ed760;font-size:12px;">⚡</span> YouTube Jam Player
                     </div>
                     <div class="jam-yt-pip-actions">
                         <button class="jam-yt-pip-btn" id="jam-yt-pip-min" title="Minimize / Expand">_</button>
@@ -70,12 +82,12 @@ class YouTubeEngine {
             });
         }
 
-        // 3. Global message listener for postMessage events from YouTube iframe
+        // 4. Global message listener for postMessage events from YouTube iframe (fallback mode)
         if (!(window as any).__jamYtMessageListenerAdded) {
             (window as any).__jamYtMessageListenerAdded = true;
             window.addEventListener('message', (event) => {
                 try {
-                    if (typeof event.data !== 'string') return;
+                    if (typeof event.data !== 'string' || this.mode !== 'iframe') return;
                     const data = JSON.parse(event.data);
                     if (data.event === 'onStateChange') {
                         // 0 = ENDED, 1 = PLAYING, 2 = PAUSED, 3 = BUFFERING
@@ -102,20 +114,12 @@ class YouTubeEngine {
                         if (data.info.playerState !== undefined) {
                             this.isPlaying = data.info.playerState === 1;
                         }
-                    } else if (data.event === 'onError') {
-                        console.warn('[Jam YouTube] Error event from iframe:', data);
-                        const code = data.info || '';
-                        try {
-                            if (typeof (Spicetify as any)?.showNotification === 'function') {
-                                (Spicetify as any).showNotification(`⚠️ YouTube Error ${code} (Owner blocked embed or restricted)`, true);
-                            }
-                        } catch {}
                     }
                 } catch {}
             });
         }
 
-        // 4. Audio unlock listener on user click
+        // 5. Audio unlock listener on user click
         const unlockAudio = () => {
             if (this.isPlaying && this.currentYtId) {
                 this.resume();
@@ -123,16 +127,146 @@ class YouTubeEngine {
             }
         };
         document.addEventListener('click', unlockAudio, { passive: true });
+    }
 
-        // 5. Load official API script in background for secondary control
-        if (!(window as any).YT) {
-            const existingScript = document.getElementById('jam-yt-api-script');
-            if (!existingScript) {
-                const script = document.createElement('script');
-                script.id = 'jam-yt-api-script';
-                script.src = 'https://www.youtube.com/iframe_api';
-                document.head.appendChild(script);
+    private getOrCreateAudioElement(): HTMLAudioElement {
+        if (!this.audioElement) {
+            this.audioElement = new Audio();
+            this.audioElement.id = 'jam-yt-audio';
+            this.audioElement.preload = 'auto';
+
+            this.audioElement.addEventListener('play', () => {
+                if (this.mode === 'direct') {
+                    this.isPlaying = true;
+                    this.onStateChange?.(true);
+                }
+            });
+
+            this.audioElement.addEventListener('pause', () => {
+                if (this.mode === 'direct') {
+                    this.isPlaying = false;
+                    this.onStateChange?.(false);
+                }
+            });
+
+            this.audioElement.addEventListener('ended', () => {
+                if (this.mode === 'direct') {
+                    this.isPlaying = false;
+                    this.onStateChange?.(false);
+                    this.onTrackEnded?.();
+                }
+            });
+
+            this.audioElement.addEventListener('timeupdate', () => {
+                if (this.mode === 'direct' && this.audioElement) {
+                    this.cachedCurrentMs = Math.round(this.audioElement.currentTime * 1000);
+                    if (this.audioElement.duration && !isNaN(this.audioElement.duration)) {
+                        this.cachedDurationMs = Math.round(this.audioElement.duration * 1000);
+                    }
+                }
+            });
+
+            this.audioElement.addEventListener('error', (e) => {
+                console.warn('[Jam YouTube] HTML5 Audio error, falling back to Iframe player:', e);
+                if (this.mode === 'direct' && this.currentYtId) {
+                    this.playIframe(this.currentYtId, this.cachedCurrentMs);
+                }
+            });
+        }
+        return this.audioElement;
+    }
+
+    // ── Direct Audio Stream Resolver (VisionOS Innertube) ──
+    private async getVisitorData(): Promise<string | null> {
+        if (this.visitorData && Date.now() < this.visitorDataExpiresAt) {
+            return this.visitorData;
+        }
+        try {
+            const res = await fetch('https://www.youtube.com/sw.js_data', {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+                }
+            });
+            if (!res.ok) return null;
+            const text = await res.text();
+            const json = JSON.parse(text.replace(/^\)\]\}'\s*/, ''));
+            const v = json?.[0]?.[2]?.[0]?.[0]?.[13];
+            if (typeof v === 'string' && v.length > 50) {
+                this.visitorData = v;
+                this.visitorDataExpiresAt = Date.now() + 3600 * 1000; // Cache 1 hour
+                return v;
             }
+        } catch (err) {
+            console.warn('[Jam YouTube] Error getting visitorData:', err);
+        }
+        return null;
+    }
+
+    private async resolveDirectAudio(ytId: string): Promise<{ url: string; durationMs: number } | null> {
+        try {
+            const visitorData = await this.getVisitorData();
+            if (!visitorData) return null;
+
+            const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-YouTube-Client-Name': '101',
+                    'X-YouTube-Client-Version': '1.02',
+                    'X-Goog-Visitor-Id': visitorData
+                },
+                body: JSON.stringify({
+                    context: {
+                        client: {
+                            clientName: 'VISIONOS',
+                            clientVersion: '1.02',
+                            deviceMake: 'Apple',
+                            deviceModel: 'RealityDevice17,1',
+                            osName: 'visionOS',
+                            osVersion: '26.5.23O471',
+                            hl: 'en',
+                            gl: 'US',
+                            utcOffsetMinutes: 0,
+                            visitorData
+                        }
+                    },
+                    videoId: ytId,
+                    contentCheckOk: true,
+                    racyCheckOk: true,
+                    playbackContext: {
+                        contentPlaybackContext: {
+                            html5Preference: 'HTML5_PREF_WANTS'
+                        }
+                    }
+                })
+            });
+
+            if (!res.ok) return null;
+            const data = await res.json();
+            if (data.playabilityStatus?.status !== 'OK') {
+                console.warn('[Jam YouTube] Playability not OK:', data.playabilityStatus?.status);
+                return null;
+            }
+
+            const formats = data.streamingData?.adaptiveFormats;
+            if (!Array.isArray(formats)) return null;
+
+            const audios = formats.filter((f: any) => f.mimeType && f.mimeType.startsWith('audio/') && f.url);
+            if (!audios.length) return null;
+
+            // Prioritize AAC 128kbps (itag 140) or Opus 160kbps (itag 251)
+            const best = audios.find((a: any) => a.itag === 140)
+                      || audios.find((a: any) => a.itag === 251)
+                      || audios[0];
+
+            const dur = parseInt(best.approxDurationMs || '0', 10);
+            return {
+                url: best.url,
+                durationMs: dur > 0 ? dur : 0
+            };
+        } catch (err) {
+            console.warn('[Jam YouTube] Direct stream resolution error:', err);
+            return null;
         }
     }
 
@@ -152,44 +286,118 @@ class YouTubeEngine {
             const vol = typeof (Spicetify as any).Player?.getVolume === 'function'
                 ? (Spicetify as any).Player.getVolume()
                 : 1;
-            const pct = Math.max(0, Math.min(100, Math.round(vol * 100)));
-            
-            // Send via postMessage directly
-            this.sendPostMessage('setVolume', [pct]);
-            if (pct === 0) {
-                this.sendPostMessage('mute');
-            } else {
-                this.sendPostMessage('unMute');
+
+            // 1. Sync HTML5 Audio
+            if (this.audioElement) {
+                this.audioElement.volume = Math.max(0, Math.min(1, vol));
             }
 
-            // Also send via YT.Player if bound
-            if (this.player && typeof this.player.setVolume === 'function') {
-                this.player.setVolume(pct);
-                if (pct === 0 && typeof this.player.mute === 'function') this.player.mute();
-                else if (pct > 0 && typeof this.player.unMute === 'function') this.player.unMute();
+            // 2. Sync Iframe if active
+            if (this.mode === 'iframe') {
+                const pct = Math.max(0, Math.min(100, Math.round(vol * 100)));
+                this.sendPostMessage('setVolume', [pct]);
+                if (pct === 0) {
+                    this.sendPostMessage('mute');
+                } else {
+                    this.sendPostMessage('unMute');
+                }
             }
         } catch {}
     }
 
-    public play(ytId: string, startMs: number = 0) {
+    public async play(ytId: string, startMs: number = 0) {
         this.currentYtId = ytId;
+        this.cachedCurrentMs = startMs;
         this.isPlaying = true;
+
+        // If already playing this track directly, just seek and continue
+        if (this.mode === 'direct' && this.audioElement && this.currentYtId === ytId && this.audioElement.src) {
+            this.seekTo(startMs);
+            this.resume();
+            return;
+        }
+
+        // Stop previous playback
+        this.stopCurrentMedia();
+
+        // Step 1: Attempt Direct Audio Stream (Ad-Free 100%)
+        const direct = await this.resolveDirectAudio(ytId);
+        if (direct && direct.url) {
+            console.log('[Jam YouTube] Direct audio stream active (Ad-Free mode)');
+            this.mode = 'direct';
+            this.isReady = true;
+            if (direct.durationMs > 0) this.cachedDurationMs = direct.durationMs;
+
+            const audio = this.getOrCreateAudioElement();
+            audio.src = direct.url;
+            audio.currentTime = Math.max(0, startMs / 1000);
+            this.syncVolume();
+
+            this.updatePiPForDirect();
+
+            try {
+                await audio.play();
+                this.isPlaying = true;
+                this.onStateChange?.(true);
+                return;
+            } catch (err) {
+                console.warn('[Jam YouTube] Autoplay waiting for user gesture:', err);
+                this.isPlaying = true;
+                return;
+            }
+        }
+
+        // Step 2: Fallback to IFrame Player if direct resolution fails
+        console.log('[Jam YouTube] Direct audio unavailable, falling back to IFrame player');
+        this.playIframe(ytId, startMs);
+    }
+
+    private updatePiPForDirect() {
+        const container = document.getElementById('jam-yt-container');
+        const body = document.getElementById('jam-yt-pip-body');
+        const title = document.getElementById('jam-yt-pip-title');
+
+        if (container) {
+            container.classList.add('active');
+            container.classList.add('minimized'); // Keep compact by default for pure audio!
+        }
+
+        if (title) {
+            title.innerHTML = `<span style="color:#1ed760;font-size:12px;">⚡</span> Ad-Free Audio Stream`;
+        }
+
+        if (body) {
+            body.innerHTML = `
+                <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;background:linear-gradient(135deg, #181818 0%, #121212 100%);color:#fff;font-family:sans-serif;padding:16px;box-sizing:border-box;text-align:center;">
+                    <div style="display:inline-flex;align-items:center;gap:6px;background:rgba(30,215,96,0.15);border:1px solid rgba(30,215,96,0.35);color:#1ed760;padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;margin-bottom:8px;">
+                        ⚡ Direct Audio Stream
+                    </div>
+                    <div style="font-size:12px;font-weight:600;color:#fff;margin-bottom:4px;">Ad-Free Playback Active</div>
+                    <div style="font-size:11px;color:rgba(255,255,255,0.5);">Zero ads • Studio audio • Instant sync</div>
+                </div>
+            `;
+        }
+    }
+
+    private playIframe(ytId: string, startMs: number = 0) {
+        this.mode = 'iframe';
         this.cachedCurrentMs = startMs;
         const startSec = Math.max(0, Math.floor(startMs / 1000));
 
         let container = document.getElementById('jam-yt-container');
-        if (!container) {
-            this.init();
-            container = document.getElementById('jam-yt-container');
-        }
         if (container) {
             container.classList.add('active');
+            container.classList.remove('minimized'); // Show video when fallback iframe is used
+        }
+
+        const title = document.getElementById('jam-yt-pip-title');
+        if (title) {
+            title.innerHTML = `<span style="color:#ff0000;font-size:12px;">▶</span> YouTube Jam Player`;
         }
 
         const body = document.getElementById('jam-yt-pip-body');
         if (!body) return;
 
-        // Check if iframe exists
         let iframe = document.getElementById('jam-yt-iframe') as HTMLIFrameElement;
         const targetSrc = `https://www.youtube-nocookie.com/embed/${ytId}?autoplay=1&enablejsapi=1&start=${startSec}&playsinline=1&widget_referrer=https://open.spotify.com`;
 
@@ -205,123 +413,98 @@ class YouTubeEngine {
             this.iframe = iframe;
         } else {
             this.iframe = iframe;
-            // If already loaded same video, just seek and play, do not reload!
             if (this.currentYtId === ytId && iframe.src.includes(`/embed/${ytId}`)) {
                 this.seekTo(startMs);
                 this.resume();
                 return;
             } else {
-                // Different video, reload iframe src directly
                 iframe.src = targetSrc;
             }
         }
 
-        // Try to bind YT.Player for richer API if YT script is ready
-        try {
-            const YT = (window as any).YT;
-            if (YT && YT.Player && !this.player) {
-                this.player = new YT.Player('jam-yt-iframe', {
-                    events: {
-                        onReady: () => {
-                            this.isReady = true;
-                            this.syncVolume();
-                        },
-                        onStateChange: (event: any) => {
-                            if (event.data === 0) {
-                                this.isPlaying = false;
-                                this.onStateChange?.(false);
-                                this.onTrackEnded?.();
-                            }
-                        },
-                        onError: (err: any) => {
-                            console.warn('[Jam YouTube] YT.Player error:', err);
-                            const code = err.data || '';
-                            try {
-                                if (typeof (Spicetify as any)?.showNotification === 'function') {
-                                    (Spicetify as any).showNotification(`⚠️ YouTube Error ${code} (Blocked or restricted)`, true);
-                                }
-                            } catch {}
-                        }
-                    }
-                });
-            }
-        } catch {}
-
-        // Schedule volume syncing and unmute after iframe starts loading
         this.syncVolume();
         setTimeout(() => this.syncVolume(), 400);
         setTimeout(() => this.syncVolume(), 1200);
         setTimeout(() => this.syncVolume(), 2500);
     }
 
+    private stopCurrentMedia() {
+        if (this.audioElement) {
+            try {
+                this.audioElement.pause();
+                this.audioElement.src = '';
+            } catch {}
+        }
+        if (this.iframe) {
+            try {
+                this.sendPostMessage('stopVideo');
+                this.iframe.src = 'about:blank';
+            } catch {}
+        }
+    }
+
     public resume() {
         this.isPlaying = true;
-        this.sendPostMessage('playVideo');
-        this.sendPostMessage('unMute');
-        this.syncVolume();
-        if (this.player && typeof this.player.playVideo === 'function') {
-            try { this.player.playVideo(); } catch {}
+        if (this.mode === 'direct' && this.audioElement) {
+            this.audioElement.play().catch(() => {});
+        } else if (this.mode === 'iframe') {
+            this.sendPostMessage('playVideo');
+            this.sendPostMessage('unMute');
         }
+        this.syncVolume();
     }
 
     public pause() {
         this.isPlaying = false;
-        this.sendPostMessage('pauseVideo');
-        if (this.player && typeof this.player.pauseVideo === 'function') {
-            try { this.player.pauseVideo(); } catch {}
+        if (this.mode === 'direct' && this.audioElement) {
+            this.audioElement.pause();
+        } else if (this.mode === 'iframe') {
+            this.sendPostMessage('pauseVideo');
         }
     }
 
     public stop() {
         this.currentYtId = null;
         this.isPlaying = false;
-        this.sendPostMessage('stopVideo');
-        if (this.iframe) {
-            this.iframe.src = 'about:blank';
-        }
+        this.mode = 'none';
+        this.stopCurrentMedia();
+
         const container = document.getElementById('jam-yt-container');
         if (container) {
             container.classList.remove('active');
             container.classList.remove('minimized');
         }
-        if (this.player && typeof this.player.stopVideo === 'function') {
-            try { this.player.stopVideo(); } catch {}
-        }
     }
 
     public seekTo(ms: number) {
-        const sec = Math.max(0, ms / 1000);
         this.cachedCurrentMs = ms;
-        this.sendPostMessage('seekTo', [sec, true]);
-        if (this.player && typeof this.player.seekTo === 'function') {
-            try { this.player.seekTo(sec, true); } catch {}
+        const sec = Math.max(0, ms / 1000);
+
+        if (this.mode === 'direct' && this.audioElement) {
+            this.audioElement.currentTime = sec;
+        } else if (this.mode === 'iframe') {
+            this.sendPostMessage('seekTo', [sec, true]);
         }
     }
 
     public getStatus(): YouTubeEngineStatus {
-        if (this.player) {
-            try {
-                if (typeof this.player.getCurrentTime === 'function') {
-                    const curSec = this.player.getCurrentTime() || 0;
-                    if (curSec > 0) this.cachedCurrentMs = Math.round(curSec * 1000);
-                }
-                if (typeof this.player.getDuration === 'function') {
-                    const durSec = this.player.getDuration() || 0;
-                    if (durSec > 0) this.cachedDurationMs = Math.round(durSec * 1000);
-                }
-                if (typeof this.player.getPlayerState === 'function') {
-                    const state = this.player.getPlayerState();
-                    this.isPlaying = state === 1;
-                }
-            } catch {}
+        if (this.mode === 'direct' && this.audioElement) {
+            if (this.audioElement.currentTime !== undefined) {
+                this.cachedCurrentMs = Math.round(this.audioElement.currentTime * 1000);
+            }
+            if (this.audioElement.duration && !isNaN(this.audioElement.duration)) {
+                this.cachedDurationMs = Math.round(this.audioElement.duration * 1000);
+            }
+            this.isPlaying = !this.audioElement.paused && !this.audioElement.ended;
         }
 
         return {
             currentMs: this.cachedCurrentMs,
             durationMs: this.cachedDurationMs,
             isPlaying: this.isPlaying,
-            isReady: this.isReady || (this.iframe !== null),
-            ytId: this.currentYtId
+            isReady: this.isReady || (this.mode === 'direct' && !!this.audioElement?.src) || (this.iframe !== null),
+            ytId: this.currentYtId,
+            mode: this.mode
         };
     }
 }
