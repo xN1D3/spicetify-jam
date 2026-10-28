@@ -1538,7 +1538,18 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     clearTimeout(reconnectTimer.current);
                     reconnectTimer.current = null;
                 }
-                if (d.np) { setNowPlaying(d.np); r.targetUri = d.np.uri; }
+                if (d.np) {
+                    setNowPlaying(d.np);
+                    r.targetUri = d.np.uri;
+                    if (d.np.isYouTube || d.np.uri?.startsWith('jam:yt:')) {
+                        activeYtTrack.current = d.np;
+                        isPlayingYtRef.current = !!d.playing;
+                        if (d.playing && d.np.ytId) {
+                            try { Spicetify.Player.pause(); } catch {}
+                            ytEngine.play(d.np.ytId, d.progress || 0);
+                        }
+                    }
+                }
                 if (d.queue) setQueue(d.queue);
                 if (d.host) {
                     setHostName(d.host);
