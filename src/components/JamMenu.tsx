@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useJam } from '../JamContext';
+import { ytEngine } from '../services/YouTubeEngine';
 import QRCode from 'qrcode';
 
 const COLORS = [
@@ -398,7 +399,9 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         <div className="jam-np-meta">
                             <div className="jam-np-label">
                                 {j.nowPlaying.isYouTube || j.nowPlaying.uri?.startsWith('jam:yt:') ? (
-                                    <span className="jam-np-yt-badge">▶ YouTube Stream</span>
+                                    <span className={`jam-np-yt-badge ${ytEngine.getStatus().mode === 'direct' ? 'adfree' : ''}`}>
+                                        {ytEngine.getStatus().mode === 'direct' ? '⚡ 0% Ads Direct' : '▶ YouTube Stream'}
+                                    </span>
                                 ) : (
                                     'Now Playing'
                                 )}

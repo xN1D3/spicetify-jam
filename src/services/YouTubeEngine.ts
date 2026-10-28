@@ -228,66 +228,91 @@ class YouTubeEngine {
     }
 
     private async resolveDirectAudio(ytId: string): Promise<{ url: string; durationMs: number } | null> {
+        // 1. Primary: Local Jam Audio Bridge (Zero Ads, Pure High-Bitrate GoogleVideo Audio)
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 3500);
+            const res = await fetch(`http://127.0.0.1:8765/audio?id=${encodeURIComponent(ytId)}`, {
+                signal: controller.signal
+            });
+            clearTimeout(timer);
+            if (res.ok) {
+                const data = await res.json();
+                if (data && data.url) {
+                    console.log('[Jam YouTube] Direct audio stream active via Local Bridge (0% Ads):', ytId);
+                    return {
+                        url: data.url,
+                        durationMs: data.durationMs || 0
+                    };
+                }
+            }
+        } catch (e) {
+            console.warn('[Jam YouTube] Local bridge (127.0.0.1:8765) unreachable, trying fallback:', e);
+        }
+
+        // 2. Secondary: Direct browser Innertube attempt (if bridge not running)
         try {
             const visitorData = await this.getVisitorData();
-            if (!visitorData) return null;
-
-            const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-YouTube-Client-Name': '101',
-                    'X-YouTube-Client-Version': '1.02',
-                    'X-Goog-Visitor-Id': visitorData
-                },
-                body: JSON.stringify({
-                    context: {
-                        client: {
-                            clientName: 'VISIONOS',
-                            clientVersion: '1.02',
-                            deviceMake: 'Apple',
-                            deviceModel: 'RealityDevice17,1',
-                            osName: 'visionOS',
-                            osVersion: '26.5.23O471',
-                            hl: 'en',
-                            gl: 'US',
-                            utcOffsetMinutes: 0,
-                            visitorData
-                        }
+            if (visitorData) {
+                const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-YouTube-Client-Name': '101',
+                        'X-YouTube-Client-Version': '1.02',
+                        'X-Goog-Visitor-Id': visitorData
                     },
-                    videoId: ytId,
-                    contentCheckOk: true,
-                    racyCheckOk: true,
-                    playbackContext: {
-                        contentPlaybackContext: {
-                            html5Preference: 'HTML5_PREF_WANTS'
+                    body: JSON.stringify({
+                        context: {
+                            client: {
+                                clientName: 'VISIONOS',
+                                clientVersion: '1.02',
+                                deviceMake: 'Apple',
+                                deviceModel: 'RealityDevice17,1',
+                                osName: 'visionOS',
+                                osVersion: '26.5.23O471',
+                                hl: 'en',
+                                gl: 'US',
+                                utcOffsetMinutes: 0,
+                                visitorData
+                            }
+                        },
+                        videoId: ytId,
+                        contentCheckOk: true,
+                        racyCheckOk: true,
+                        playbackContext: {
+                            contentPlaybackContext: {
+                                html5Preference: 'HTML5_PREF_WANTS'
+                            }
+                        }
+                    })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.playabilityStatus?.status === 'OK') {
+                        const formats = data.streamingData?.adaptiveFormats;
+                        if (Array.isArray(formats)) {
+                            const audios = formats.filter((f: any) => f.mimeType && f.mimeType.startsWith('audio/') && f.url);
+                            if (audios.length) {
+                                const best = audios.find((a: any) => a.itag === 140)
+                                          || audios.find((a: any) => a.itag === 251)
+                                          || audios[0];
+                                const dur = parseInt(best.approxDurationMs || '0', 10);
+                                return {
+                                    url: best.url,
+                                    durationMs: dur > 0 ? dur : 0
+                                };
+                            }
                         }
                     }
-                })
-            });
-
-            if (!res.ok) return null;
-            const data = await res.json();
-            if (data.playabilityStatus?.status !== 'OK') return null;
-
-            const formats = data.streamingData?.adaptiveFormats;
-            if (!Array.isArray(formats)) return null;
-
-            const audios = formats.filter((f: any) => f.mimeType && f.mimeType.startsWith('audio/') && f.url);
-            if (!audios.length) return null;
-
-            const best = audios.find((a: any) => a.itag === 140)
-                      || audios.find((a: any) => a.itag === 251)
-                      || audios[0];
-
-            const dur = parseInt(best.approxDurationMs || '0', 10);
-            return {
-                url: best.url,
-                durationMs: dur > 0 ? dur : 0
-            };
+                }
+            }
         } catch {
-            return null;
+            // Browser CORS or network error
         }
+
+        return null;
     }
 
     private sendPostMessage(func: string, args: any[] = []) {
@@ -350,8 +375,17 @@ class YouTubeEngine {
 
             const audio = this.getOrCreateAudioElement();
             audio.src = direct.url;
-            audio.currentTime = Math.max(0, startMs / 1000);
             this.syncVolume();
+
+            if (startMs > 0) {
+                const onLoaded = () => {
+                    try { audio.currentTime = Math.max(0, startMs / 1000); } catch {}
+                    audio.removeEventListener('loadedmetadata', onLoaded);
+                };
+                audio.addEventListener('loadedmetadata', onLoaded);
+            } else {
+                audio.currentTime = 0;
+            }
 
             this.updatePiPForDirect();
 
@@ -369,7 +403,10 @@ class YouTubeEngine {
         }
 
         // 2. Fallback to IFrame Player (with real-time progress & duration sync)
-        console.log('[Jam YouTube] Playing via IFrame with live sync');
+        console.warn('[Jam YouTube] Playing via IFrame fallback (Make sure Start-Jam-Audio.bat is running for 0% ads)');
+        try {
+            (Spicetify as any)?.showNotification?.('⚠️ โหมดสำรอง: เปิด Start-Jam-Audio.bat เพื่อฟัง YouTube แบบไม่มีโฆษณา');
+        } catch {}
         this.playIframe(ytId, startMs);
     }
 
@@ -494,14 +531,18 @@ class YouTubeEngine {
         if (this.audioElement) {
             try {
                 this.audioElement.pause();
-                this.audioElement.src = '';
+                this.audioElement.removeAttribute('src');
+                this.audioElement.load();
             } catch {}
         }
         if (this.iframe) {
             try {
                 this.sendPostMessage('stopVideo');
                 this.iframe.src = 'about:blank';
+                this.iframe.remove();
             } catch {}
+            this.iframe = null;
+            this.player = null;
         }
     }
 

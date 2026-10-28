@@ -497,6 +497,11 @@
     box-shadow: 0 2px 6px rgba(255, 0, 0, 0.4);
 }
 
+.jam-np-yt-badge.adfree {
+    background: #1db954;
+    box-shadow: 0 2px 6px rgba(29, 185, 84, 0.4);
+}
+
 /* ── Custom / Fake Track (Chat via Queue) ── */
 .jam-q-add-btn {
     background: transparent;
