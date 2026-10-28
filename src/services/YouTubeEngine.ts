@@ -1,5 +1,5 @@
 // YouTube Virtual Audio Engine for Spicetify Jam
-// Dual-Mode: Direct Audio Stream (0% Ads, Pure Audio) with IFrame PiP Fallback
+// Dual-Mode: Direct Audio Stream (0% Ads) + Robust IFrame PiP Fallback with Live Time Sync
 
 export interface YouTubeEngineStatus {
     currentMs: number;
@@ -21,6 +21,7 @@ class YouTubeEngine {
     private isPlaying = false;
     private cachedDurationMs = 0;
     private cachedCurrentMs = 0;
+    private lastTickTime = 0;
 
     // Cache visitorData for Innertube
     private visitorData: string | null = null;
@@ -59,7 +60,7 @@ class YouTubeEngine {
             container.innerHTML = `
                 <div class="jam-yt-pip-header">
                     <div class="jam-yt-pip-title" id="jam-yt-pip-title">
-                        <span style="color:#1ed760;font-size:12px;">⚡</span> YouTube Jam Player
+                        <span style="color:#ff0000;font-size:12px;">▶</span> YouTube Jam Player
                     </div>
                     <div class="jam-yt-pip-actions">
                         <button class="jam-yt-pip-btn" id="jam-yt-pip-min" title="Minimize / Expand">_</button>
@@ -82,42 +83,55 @@ class YouTubeEngine {
             });
         }
 
-        // 4. Global message listener for postMessage events from YouTube iframe (fallback mode)
-        if (!(window as any).__jamYtMessageListenerAdded) {
-            (window as any).__jamYtMessageListenerAdded = true;
-            window.addEventListener('message', (event) => {
-                try {
-                    if (typeof event.data !== 'string' || this.mode !== 'iframe') return;
-                    const data = JSON.parse(event.data);
-                    if (data.event === 'onStateChange') {
-                        // 0 = ENDED, 1 = PLAYING, 2 = PAUSED, 3 = BUFFERING
-                        if (data.info === 1) {
-                            this.isPlaying = true;
-                            this.isReady = true;
-                            this.syncVolume();
-                            this.onStateChange?.(true);
-                        } else if (data.info === 2) {
-                            this.isPlaying = false;
-                            this.onStateChange?.(false);
-                        } else if (data.info === 0) {
-                            this.isPlaying = false;
-                            this.onStateChange?.(false);
-                            this.onTrackEnded?.();
-                        }
-                    } else if (data.event === 'infoDelivery' && data.info) {
-                        if (data.info.currentTime !== undefined) {
-                            this.cachedCurrentMs = Math.round(data.info.currentTime * 1000);
-                        }
-                        if (data.info.duration !== undefined && data.info.duration > 0) {
-                            this.cachedDurationMs = Math.round(data.info.duration * 1000);
-                        }
-                        if (data.info.playerState !== undefined) {
-                            this.isPlaying = data.info.playerState === 1;
+        // 4. Attach window message listener for YouTube postMessage events
+        if ((window as any).__jamYtMsgHandler) {
+            window.removeEventListener('message', (window as any).__jamYtMsgHandler);
+        }
+        const msgHandler = (event: MessageEvent) => {
+            try {
+                let data = event.data;
+                if (typeof data === 'string') {
+                    try { data = JSON.parse(data); } catch { return; }
+                }
+                if (!data || typeof data !== 'object') return;
+
+                if (data.event === 'onStateChange') {
+                    // 0 = ENDED, 1 = PLAYING, 2 = PAUSED, 3 = BUFFERING
+                    if (data.info === 1) {
+                        this.isPlaying = true;
+                        this.isReady = true;
+                        this.lastTickTime = performance.now();
+                        this.syncVolume();
+                        this.onStateChange?.(true);
+                    } else if (data.info === 2) {
+                        this.isPlaying = false;
+                        this.lastTickTime = 0;
+                        this.onStateChange?.(false);
+                    } else if (data.info === 0) {
+                        this.isPlaying = false;
+                        this.lastTickTime = 0;
+                        this.onStateChange?.(false);
+                        this.onTrackEnded?.();
+                    }
+                } else if (data.event === 'infoDelivery' && data.info) {
+                    if (data.info.currentTime !== undefined && data.info.currentTime >= 0) {
+                        this.cachedCurrentMs = Math.round(data.info.currentTime * 1000);
+                        this.lastTickTime = performance.now();
+                    }
+                    if (data.info.duration !== undefined && data.info.duration > 0) {
+                        this.cachedDurationMs = Math.round(data.info.duration * 1000);
+                    }
+                    if (data.info.playerState !== undefined) {
+                        this.isPlaying = data.info.playerState === 1;
+                        if (this.isPlaying && this.lastTickTime === 0) {
+                            this.lastTickTime = performance.now();
                         }
                     }
-                } catch {}
-            });
-        }
+                }
+            } catch {}
+        };
+        (window as any).__jamYtMsgHandler = msgHandler;
+        window.addEventListener('message', msgHandler);
 
         // 5. Audio unlock listener on user click
         const unlockAudio = () => {
@@ -127,6 +141,17 @@ class YouTubeEngine {
             }
         };
         document.addEventListener('click', unlockAudio, { passive: true });
+
+        // 6. Load official YT API script in background for secondary binding
+        if (!(window as any).YT) {
+            const existingScript = document.getElementById('jam-yt-api-script');
+            if (!existingScript) {
+                const script = document.createElement('script');
+                script.id = 'jam-yt-api-script';
+                script.src = 'https://www.youtube.com/iframe_api';
+                document.head.appendChild(script);
+            }
+        }
     }
 
     private getOrCreateAudioElement(): HTMLAudioElement {
@@ -138,6 +163,7 @@ class YouTubeEngine {
             this.audioElement.addEventListener('play', () => {
                 if (this.mode === 'direct') {
                     this.isPlaying = true;
+                    this.lastTickTime = performance.now();
                     this.onStateChange?.(true);
                 }
             });
@@ -145,6 +171,7 @@ class YouTubeEngine {
             this.audioElement.addEventListener('pause', () => {
                 if (this.mode === 'direct') {
                     this.isPlaying = false;
+                    this.lastTickTime = 0;
                     this.onStateChange?.(false);
                 }
             });
@@ -152,6 +179,7 @@ class YouTubeEngine {
             this.audioElement.addEventListener('ended', () => {
                 if (this.mode === 'direct') {
                     this.isPlaying = false;
+                    this.lastTickTime = 0;
                     this.onStateChange?.(false);
                     this.onTrackEnded?.();
                 }
@@ -160,6 +188,7 @@ class YouTubeEngine {
             this.audioElement.addEventListener('timeupdate', () => {
                 if (this.mode === 'direct' && this.audioElement) {
                     this.cachedCurrentMs = Math.round(this.audioElement.currentTime * 1000);
+                    this.lastTickTime = performance.now();
                     if (this.audioElement.duration && !isNaN(this.audioElement.duration)) {
                         this.cachedDurationMs = Math.round(this.audioElement.duration * 1000);
                     }
@@ -182,22 +211,18 @@ class YouTubeEngine {
             return this.visitorData;
         }
         try {
-            const res = await fetch('https://www.youtube.com/sw.js_data', {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
-                }
-            });
+            const res = await fetch('https://www.youtube.com/sw.js_data');
             if (!res.ok) return null;
             const text = await res.text();
             const json = JSON.parse(text.replace(/^\)\]\}'\s*/, ''));
             const v = json?.[0]?.[2]?.[0]?.[0]?.[13];
             if (typeof v === 'string' && v.length > 50) {
                 this.visitorData = v;
-                this.visitorDataExpiresAt = Date.now() + 3600 * 1000; // Cache 1 hour
+                this.visitorDataExpiresAt = Date.now() + 3600 * 1000;
                 return v;
             }
-        } catch (err) {
-            console.warn('[Jam YouTube] Error getting visitorData:', err);
+        } catch {
+            // Browser CORS might block sw.js_data on https://open.spotify.com
         }
         return null;
     }
@@ -243,10 +268,7 @@ class YouTubeEngine {
 
             if (!res.ok) return null;
             const data = await res.json();
-            if (data.playabilityStatus?.status !== 'OK') {
-                console.warn('[Jam YouTube] Playability not OK:', data.playabilityStatus?.status);
-                return null;
-            }
+            if (data.playabilityStatus?.status !== 'OK') return null;
 
             const formats = data.streamingData?.adaptiveFormats;
             if (!Array.isArray(formats)) return null;
@@ -254,7 +276,6 @@ class YouTubeEngine {
             const audios = formats.filter((f: any) => f.mimeType && f.mimeType.startsWith('audio/') && f.url);
             if (!audios.length) return null;
 
-            // Prioritize AAC 128kbps (itag 140) or Opus 160kbps (itag 251)
             const best = audios.find((a: any) => a.itag === 140)
                       || audios.find((a: any) => a.itag === 251)
                       || audios[0];
@@ -264,8 +285,7 @@ class YouTubeEngine {
                 url: best.url,
                 durationMs: dur > 0 ? dur : 0
             };
-        } catch (err) {
-            console.warn('[Jam YouTube] Direct stream resolution error:', err);
+        } catch {
             return null;
         }
     }
@@ -287,19 +307,20 @@ class YouTubeEngine {
                 ? (Spicetify as any).Player.getVolume()
                 : 1;
 
-            // 1. Sync HTML5 Audio
             if (this.audioElement) {
                 this.audioElement.volume = Math.max(0, Math.min(1, vol));
             }
 
-            // 2. Sync Iframe if active
             if (this.mode === 'iframe') {
                 const pct = Math.max(0, Math.min(100, Math.round(vol * 100)));
                 this.sendPostMessage('setVolume', [pct]);
-                if (pct === 0) {
-                    this.sendPostMessage('mute');
-                } else {
-                    this.sendPostMessage('unMute');
+                if (pct === 0) this.sendPostMessage('mute');
+                else this.sendPostMessage('unMute');
+
+                if (this.player && typeof this.player.setVolume === 'function') {
+                    this.player.setVolume(pct);
+                    if (pct === 0 && typeof this.player.mute === 'function') this.player.mute();
+                    else if (pct > 0 && typeof this.player.unMute === 'function') this.player.unMute();
                 }
             }
         } catch {}
@@ -308,22 +329,21 @@ class YouTubeEngine {
     public async play(ytId: string, startMs: number = 0) {
         this.currentYtId = ytId;
         this.cachedCurrentMs = startMs;
+        this.lastTickTime = performance.now();
         this.isPlaying = true;
 
-        // If already playing this track directly, just seek and continue
         if (this.mode === 'direct' && this.audioElement && this.currentYtId === ytId && this.audioElement.src) {
             this.seekTo(startMs);
             this.resume();
             return;
         }
 
-        // Stop previous playback
         this.stopCurrentMedia();
 
-        // Step 1: Attempt Direct Audio Stream (Ad-Free 100%)
+        // 1. Try Direct Audio Stream (Ad-Free)
         const direct = await this.resolveDirectAudio(ytId);
         if (direct && direct.url) {
-            console.log('[Jam YouTube] Direct audio stream active (Ad-Free mode)');
+            console.log('[Jam YouTube] Direct audio stream active (Ad-Free)');
             this.mode = 'direct';
             this.isReady = true;
             if (direct.durationMs > 0) this.cachedDurationMs = direct.durationMs;
@@ -338,17 +358,18 @@ class YouTubeEngine {
             try {
                 await audio.play();
                 this.isPlaying = true;
+                this.lastTickTime = performance.now();
                 this.onStateChange?.(true);
                 return;
             } catch (err) {
-                console.warn('[Jam YouTube] Autoplay waiting for user gesture:', err);
+                console.warn('[Jam YouTube] Waiting for user click to start audio:', err);
                 this.isPlaying = true;
                 return;
             }
         }
 
-        // Step 2: Fallback to IFrame Player if direct resolution fails
-        console.log('[Jam YouTube] Direct audio unavailable, falling back to IFrame player');
+        // 2. Fallback to IFrame Player (with real-time progress & duration sync)
+        console.log('[Jam YouTube] Playing via IFrame with live sync');
         this.playIframe(ytId, startMs);
     }
 
@@ -359,7 +380,7 @@ class YouTubeEngine {
 
         if (container) {
             container.classList.add('active');
-            container.classList.add('minimized'); // Keep compact by default for pure audio!
+            container.classList.add('minimized');
         }
 
         if (title) {
@@ -382,12 +403,13 @@ class YouTubeEngine {
     private playIframe(ytId: string, startMs: number = 0) {
         this.mode = 'iframe';
         this.cachedCurrentMs = startMs;
+        this.lastTickTime = performance.now();
+        this.isPlaying = true;
         const startSec = Math.max(0, Math.floor(startMs / 1000));
 
         let container = document.getElementById('jam-yt-container');
         if (container) {
             container.classList.add('active');
-            container.classList.remove('minimized'); // Show video when fallback iframe is used
         }
 
         const title = document.getElementById('jam-yt-pip-title');
@@ -422,10 +444,50 @@ class YouTubeEngine {
             }
         }
 
-        this.syncVolume();
-        setTimeout(() => this.syncVolume(), 400);
-        setTimeout(() => this.syncVolume(), 1200);
-        setTimeout(() => this.syncVolume(), 2500);
+        // Try to bind YT.Player for richer state & time extraction
+        try {
+            const YT = (window as any).YT;
+            if (YT && YT.Player) {
+                this.player = new YT.Player('jam-yt-iframe', {
+                    events: {
+                        onReady: () => {
+                            this.isReady = true;
+                            this.syncVolume();
+                        },
+                        onStateChange: (event: any) => {
+                            if (event.data === 1) {
+                                this.isPlaying = true;
+                                this.lastTickTime = performance.now();
+                                this.onStateChange?.(true);
+                            } else if (event.data === 2) {
+                                this.isPlaying = false;
+                                this.lastTickTime = 0;
+                                this.onStateChange?.(false);
+                            } else if (event.data === 0) {
+                                this.isPlaying = false;
+                                this.lastTickTime = 0;
+                                this.onStateChange?.(false);
+                                this.onTrackEnded?.();
+                            }
+                        }
+                    }
+                });
+            }
+        } catch {}
+
+        // Send listening handshake so YouTube iframe streams currentTime & duration updates
+        setTimeout(() => {
+            this.sendPostMessage('listening');
+            this.syncVolume();
+        }, 500);
+        setTimeout(() => {
+            this.sendPostMessage('listening');
+            this.syncVolume();
+        }, 1500);
+        setTimeout(() => {
+            this.sendPostMessage('listening');
+            this.syncVolume();
+        }, 3000);
     }
 
     private stopCurrentMedia() {
@@ -445,21 +507,29 @@ class YouTubeEngine {
 
     public resume() {
         this.isPlaying = true;
+        this.lastTickTime = performance.now();
         if (this.mode === 'direct' && this.audioElement) {
             this.audioElement.play().catch(() => {});
         } else if (this.mode === 'iframe') {
             this.sendPostMessage('playVideo');
             this.sendPostMessage('unMute');
+            if (this.player && typeof this.player.playVideo === 'function') {
+                try { this.player.playVideo(); } catch {}
+            }
         }
         this.syncVolume();
     }
 
     public pause() {
         this.isPlaying = false;
+        this.lastTickTime = 0;
         if (this.mode === 'direct' && this.audioElement) {
             this.audioElement.pause();
         } else if (this.mode === 'iframe') {
             this.sendPostMessage('pauseVideo');
+            if (this.player && typeof this.player.pauseVideo === 'function') {
+                try { this.player.pauseVideo(); } catch {}
+            }
         }
     }
 
@@ -467,6 +537,7 @@ class YouTubeEngine {
         this.currentYtId = null;
         this.isPlaying = false;
         this.mode = 'none';
+        this.lastTickTime = 0;
         this.stopCurrentMedia();
 
         const container = document.getElementById('jam-yt-container');
@@ -478,12 +549,16 @@ class YouTubeEngine {
 
     public seekTo(ms: number) {
         this.cachedCurrentMs = ms;
+        this.lastTickTime = performance.now();
         const sec = Math.max(0, ms / 1000);
 
         if (this.mode === 'direct' && this.audioElement) {
             this.audioElement.currentTime = sec;
         } else if (this.mode === 'iframe') {
             this.sendPostMessage('seekTo', [sec, true]);
+            if (this.player && typeof this.player.seekTo === 'function') {
+                try { this.player.seekTo(sec, true); } catch {}
+            }
         }
     }
 
@@ -496,6 +571,39 @@ class YouTubeEngine {
                 this.cachedDurationMs = Math.round(this.audioElement.duration * 1000);
             }
             this.isPlaying = !this.audioElement.paused && !this.audioElement.ended;
+        } else if (this.mode === 'iframe') {
+            // Check YT.Player if bound
+            if (this.player) {
+                try {
+                    if (typeof this.player.getCurrentTime === 'function') {
+                        const cur = this.player.getCurrentTime();
+                        if (typeof cur === 'number' && cur > 0) {
+                            this.cachedCurrentMs = Math.round(cur * 1000);
+                            this.lastTickTime = performance.now();
+                        }
+                    }
+                    if (typeof this.player.getDuration === 'function') {
+                        const dur = this.player.getDuration();
+                        if (typeof dur === 'number' && dur > 0) {
+                            this.cachedDurationMs = Math.round(dur * 1000);
+                        }
+                    }
+                    if (typeof this.player.getPlayerState === 'function') {
+                        const st = this.player.getPlayerState();
+                        this.isPlaying = st === 1;
+                    }
+                } catch {}
+            }
+
+            // Smooth local clock interpolation between postMessage frames
+            if (this.isPlaying && this.lastTickTime > 0) {
+                const now = performance.now();
+                const delta = now - this.lastTickTime;
+                if (delta > 0 && delta < 2000) {
+                    this.cachedCurrentMs += Math.round(delta);
+                }
+                this.lastTickTime = now;
+            }
         }
 
         return {

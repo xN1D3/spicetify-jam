@@ -631,7 +631,13 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (activeYtTrack.current) {
                 const status = ytEngine.getStatus();
                 setProgress(status.currentMs);
-                if (status.durationMs > 0) setDuration(status.durationMs);
+                if (status.durationMs > 0) {
+                    setDuration(status.durationMs);
+                    if (activeYtTrack.current.duration !== status.durationMs) {
+                        activeYtTrack.current.duration = status.durationMs;
+                        setNowPlaying(prev => prev ? { ...prev, duration: status.durationMs } : prev);
+                    }
+                }
                 setIsPlaying(status.isPlaying);
                 ytEngine.syncVolume();
 
