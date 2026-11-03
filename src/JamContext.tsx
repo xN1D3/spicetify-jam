@@ -17,7 +17,17 @@ interface TrackInfo {
     duration?: number;
     addedBy?: { name: string; image: string };
 }
-export interface Member { id: string; name: string; isHost?: boolean; image?: string; status?: 'active' | 'reconnecting' | 'disconnected'; }
+export const CURRENT_JAM_VERSION = '1.7.0';
+export const CURRENT_PATCH = 0;
+
+export interface Member {
+    id: string;
+    name: string;
+    isHost?: boolean;
+    image?: string;
+    status?: 'active' | 'reconnecting' | 'disconnected';
+    version?: string;
+}
 export interface LastSessionInfo {
     role: 'host' | 'guest';
     jamId: string;
@@ -571,7 +581,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const peerRef = useRef<Peer | null>(null);
     const conns = useRef<Map<string, DataConnection>>(new Map());
-    const memberRegistry = useRef<Map<string, { name: string, image: string }>>(new Map());
+    const memberRegistry = useRef<Map<string, { name: string; image: string; version?: string }>>(new Map());
     const cachedUser = useRef<{ name: string; image: string }>({ name: 'Listener', image: '' });
     const userPromise = useRef<Promise<{ name: string; image: string }> | null>(null);
     const refs = useRef({
@@ -673,10 +683,6 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         userPromise.current = fetchUserAsync();
         userPromise.current.then(u => { cachedUser.current = u; });
 
-        // ⚠️  Keep this in sync with package.json and manifest.json on every version bump.
-        const CURRENT_VERSION = '1.6.9';
-        const CURRENT_PATCH = 0;
-
         const checkUpdate = async () => {
             try {
                 const autoUpdated = await checkForAutoUpdate((newVer) => {
@@ -688,7 +694,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     const res = await fetch('https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/manifest.json?t=' + Date.now());
                     const data = await res.json();
                     if (data?.version) {
-                        const isRemoteNewer = compareVersions(data.version, data.patch ?? 0, CURRENT_VERSION, CURRENT_PATCH) > 0;
+                        const isRemoteNewer = compareVersions(data.version, data.patch ?? 0, CURRENT_JAM_VERSION, CURRENT_PATCH) > 0;
                         if (isRemoteNewer) {
                             setUpdateAvailable(true);
                             console.log(`[Spicetify Jam] Update available: ${data.version}${data.patch ? ' (hotfix ' + data.patch + ')' : ''}`);
@@ -744,22 +750,22 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 name: me.name || 'Host',
                 image: me.image || '',
                 isHost: true,
-                status: 'active'
+                status: 'active',
+                version: CURRENT_JAM_VERSION
             });
-            const seenNames = new Set<string>();
+            const seenIds = new Set<string>();
             memberRegistry.current.forEach((m, pid) => {
                 const conn = conns.current.get(pid);
                 if (!conn) return;
-                const name = m?.name || 'Listener';
-                if (name === me.name) return;
-                if (seenNames.has(name)) return;
-                seenNames.add(name);
+                if (seenIds.has(pid)) return;
+                seenIds.add(pid);
                 const isConnOpen = conn.open === true;
                 result.push({
                     id: pid,
-                    name,
+                    name: m?.name || 'Listener',
                     image: m?.image || '',
-                    status: isConnOpen ? 'active' : 'reconnecting'
+                    status: isConnOpen ? 'active' : 'reconnecting',
+                    version: m?.version
                 });
             });
         }
@@ -786,11 +792,18 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 setIsPlaying(status.isPlaying);
                 localAudio.syncVolume();
 
-                if (refs.current.isHost && status.isPlaying && conns.current.size > 0) {
+                if (refs.current.isHost && conns.current.size > 0) {
                     tickCounter++;
-                    if (tickCounter >= 6) {
-                        tickCounter = 0;
-                        broadcast({ type: 'SYNC_TICK_LOCAL', pos: status.currentMs, ts: now });
+                    if (status.isPlaying) {
+                        if (tickCounter >= 6) {
+                            tickCounter = 0;
+                            broadcast({ type: 'SYNC_TICK_LOCAL', pos: status.currentMs, ts: now });
+                        }
+                    } else {
+                        if (tickCounter >= 7) {
+                            tickCounter = 0;
+                            broadcast({ type: 'HEARTBEAT' });
+                        }
                     }
                 }
                 return;
@@ -819,12 +832,19 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     refs.current.lastHostProgress = currentPos;
                     refs.current.lastHostProgressTs = now;
 
-                    // 2. Periodic micro-sync heartbeat (every ~2.4s while playing)
-                    if (currentPlaying && conns.current.size > 0) {
+                    // 2. Periodic micro-sync heartbeat while playing OR keepalive heartbeat when paused
+                    if (conns.current.size > 0) {
                         tickCounter++;
-                        if (tickCounter >= 6) { // 6 * 400ms = 2400ms
-                            tickCounter = 0;
-                            broadcast({ type: 'SYNC_TICK', pos: currentPos, ts: now });
+                        if (currentPlaying) {
+                            if (tickCounter >= 6) { // 6 * 400ms = 2400ms
+                                tickCounter = 0;
+                                broadcast({ type: 'SYNC_TICK', pos: currentPos, ts: now });
+                            }
+                        } else {
+                            if (tickCounter >= 7) { // 7 * 400ms = 2800ms
+                                tickCounter = 0;
+                                broadcast({ type: 'HEARTBEAT' });
+                            }
                         }
                     } else {
                         tickCounter = 0;
@@ -1709,21 +1729,19 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             case 'JOIN':
                 if (!r.isHost) return;
                 const joinName = d.name || 'Listener';
-                // Close and remove any older stale connection for this user name
+                // Close and clean up only dead/stale connections
                 conns.current.forEach((existingConn, pid) => {
-                    if (pid !== conn.peer) {
-                        const existingMem = memberRegistry.current.get(pid);
-                        if (existingMem && existingMem.name === joinName) {
-                            try { existingConn.close(); } catch { }
-                            conns.current.delete(pid);
-                            memberRegistry.current.delete(pid);
-                        }
+                    if (pid !== conn.peer && !existingConn.open) {
+                        try { existingConn.close(); } catch { }
+                        conns.current.delete(pid);
+                        memberRegistry.current.delete(pid);
                     }
                 });
                 conns.current.set(conn.peer, conn);
-                memberRegistry.current.set(conn.peer, { name: joinName, image: d.image || '' });
+                memberRegistry.current.set(conn.peer, { name: joinName, image: d.image || '', version: d.version || undefined });
                 const all = buildMembers();
                 setMembers(all);
+                broadcast({ type: 'MEMBERS', members: all });
                 if (activeLocalTrack.current) {
                     const localStat = localAudio.getStatus();
                     conn.send({
@@ -2374,7 +2392,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         newConn.on('data', (d: any) => onDataRef.current?.(d, newConn));
 
                         const me = cachedUser.current?.name ? cachedUser.current : await (userPromise.current || fetchUserAsync());
-                        newConn.send({ type: 'JOIN', name: me.name, image: me.image });
+                        newConn.send({ type: 'JOIN', name: me.name, image: me.image, version: CURRENT_JAM_VERSION });
                         Spicetify.showNotification('✅ Reconnected to Host!');
 
                         // Handshake guard: ensure host acknowledged with INIT; retry JOIN if needed
@@ -2389,7 +2407,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                                 clearInterval(joinRetryTimer);
                                 return;
                             }
-                            try { newConn.send({ type: 'JOIN', name: me.name, image: me.image }); } catch { }
+                            try { newConn.send({ type: 'JOIN', name: me.name, image: me.image, version: CURRENT_JAM_VERSION }); } catch { }
                         }, 1200);
                     });
 
@@ -2482,7 +2500,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 } catch { }
                 setJamId(id); setIsHost(true); setConnected(true); setError(null);
                 setReconnecting(false);
-                setHostName(me.name); setMembers([{ id: 'host', name: me.name, image: me.image, isHost: true, status: 'active' }]);
+                setHostName(me.name); setMembers([{ id: 'host', name: me.name, image: me.image, isHost: true, status: 'active', version: CURRENT_JAM_VERSION }]);
                 const hostUser = { name: me.name || 'Host', image: me.image || '' };
                 currentNpAddedBy.current = hostUser;
                 const t = getTrack(hostUser); if (t) { setNowPlaying(t); refs.current.targetUri = t.uri || null; }
@@ -2587,8 +2605,8 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         setConnected(true);
                         setReconnecting(false);
                         setError(null);
-                        setMembers([{ id: cleanId, name: 'Host', isHost: true, status: 'active' }, { id: 'me', name: me.name, image: me.image, status: 'active' }]);
-                        conn.send({ type: 'JOIN', name: me.name, image: me.image });
+                        setMembers([{ id: cleanId, name: 'Host', isHost: true, status: 'active' }, { id: 'me', name: me.name, image: me.image, status: 'active', version: CURRENT_JAM_VERSION }]);
+                        conn.send({ type: 'JOIN', name: me.name, image: me.image, version: CURRENT_JAM_VERSION });
                         res();
                     });
                 });
