@@ -2,6 +2,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import Peer, { DataConnection } from 'peerjs';
 import { localAudio } from './services/LocalAudioEngine';
+import { checkForAutoUpdate, compareVersions } from './updater';
 
 interface TrackInfo {
     title: string;
@@ -23,14 +24,30 @@ export interface LastSessionInfo {
     hostName?: string;
 }
 
+export interface ChatMessage {
+    id: string;
+    text: string;
+    sender: { name: string; image: string; isHost?: boolean };
+    ts: number;
+    isOutgoing?: boolean;
+    isRead?: boolean;
+    readBy?: string[];
+}
+
 interface JamState {
     isHost: boolean; jamId: string; members: Member[]; connected: boolean; error: string | null;
     nowPlaying: TrackInfo | null; hostName: string; queue: TrackInfo[];
     guestControls: boolean; guestCreateSong: boolean; localAudioEnabled: boolean; isPlaying: boolean; progress: number; duration: number; ping: number;
     updateAvailable: boolean;
+    applyUpdate: () => void;
     reconnecting: boolean;
     savedHostId: string | null;
     savedSession: LastSessionInfo | null;
+    chatMessages: ChatMessage[];
+    sendChatMessage: (text: string) => void;
+    latestChatSender: { name: string; image: string } | null;
+    unreadChatCount: number;
+    markChatRead: () => void;
     resumeSession: () => Promise<void>;
     startJam: (requestedId?: string) => Promise<void>; joinJam: (id: string, name?: string) => Promise<void>;
     leaveJam: (clearSavedSession?: boolean) => void; addToQueue: (uri: string | string[], sender?: { name: string; image: string }, preloadedMeta?: TrackInfo) => void; removeFromQueue: (uri: string, uid?: string) => void;
@@ -155,7 +172,7 @@ const parseSpotifyLocalUri = (uri: string): { title: string; artist: string; dur
     }
 };
 
-const getTrack = (): TrackInfo | null => {
+const getTrack = (explicitAddedBy?: { name: string; image: string }): TrackInfo | null => {
     const t = Spicetify.Player.data?.item;
     if (!t) return null;
     const meta = t.metadata || {};
@@ -164,7 +181,8 @@ const getTrack = (): TrackInfo | null => {
         artist: t.artists?.[0]?.name || meta.artist_name || 'Unknown',
         artUrl: fmtImg(meta.image_xlarge_url || meta.image_large_url || meta.image_url || t.images?.[0]?.url),
         uri: t.uri,
-        uid: t.uid
+        uid: t.uid,
+        addedBy: explicitAddedBy
     };
     if (t.uri?.startsWith('spotify:local:') && (res.title === 'Unknown' || !res.title)) {
         const parsed = parseSpotifyLocalUri(t.uri);
@@ -476,6 +494,24 @@ const rewriteNativeQueue = async (tracks: TrackInfo[]) => {
     }
 };
 
+const JAM_CUSTOM_QUEUE_KEY = 'jam_custom_tracks_cache';
+const saveCustomTracksToStorage = (q: TrackInfo[]) => {
+    try {
+        const customOnly = q.filter(t => t.isCustom || t.uri?.startsWith('jam:fake:') || t.isLocalAudio || t.uri?.startsWith('jam:local:'));
+        localStorage.setItem(JAM_CUSTOM_QUEUE_KEY, JSON.stringify(customOnly));
+    } catch (_) {}
+};
+const loadCustomTracksFromStorage = (): TrackInfo[] => {
+    try {
+        const raw = localStorage.getItem(JAM_CUSTOM_QUEUE_KEY);
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) return parsed;
+        }
+    } catch (_) {}
+    return [];
+};
+
 const Ctx = createContext<JamState | undefined>(undefined);
 
 export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -514,13 +550,24 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const [hostName, setHostName] = useState('Host');
     const [queue, setQueue] = useState<TrackInfo[]>([]);
     const [guestControls, setGuestControls] = useState(false);
-    const [guestCreateSong, setGuestCreateSong] = useState(false);
+    const [guestCreateSong, setGuestCreateSong] = useState<boolean>(() => {
+        try {
+            const stored = localStorage.getItem('jam_guest_create_song');
+            return stored !== null ? stored === 'true' : true; // Default true out-of-the-box
+        } catch {
+            return true;
+        }
+    });
     const [localAudioEnabled, setLocalAudioEnabled] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
     const [progress, setProgress] = useState(0);
     const [duration, setDuration] = useState(0);
     const [ping, setPing] = useState(-1);
     const [updateAvailable, setUpdateAvailable] = useState(false);
+    const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+    const [latestChatSender, setLatestChatSender] = useState<{ name: string; image: string } | null>(null);
+    const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
+    const currentNpAddedBy = useRef<{ name: string; image: string } | null>(null);
 
     const peerRef = useRef<Peer | null>(null);
     const conns = useRef<Map<string, DataConnection>>(new Map());
@@ -532,7 +579,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         connected: false,
         reconnecting: false,
         guestControls: false,
-        guestCreateSong: false,
+        guestCreateSong: (() => {
+            try {
+                const stored = localStorage.getItem('jam_guest_create_song');
+                return stored !== null ? stored === 'true' : true;
+            } catch {
+                return true;
+            }
+        })(),
         localAudioEnabled: false,
         jamId: '',
         targetUri: null as string | null,
@@ -620,19 +674,26 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         userPromise.current.then(u => { cachedUser.current = u; });
 
         // ⚠️  Keep this in sync with package.json and manifest.json on every version bump.
-        const CURRENT_VERSION = '1.4.1';
-        const CURRENT_PATCH = 1; // bump for any code change without a version bump
+        const CURRENT_VERSION = '1.6.2';
+        const CURRENT_PATCH = 0;
 
         const checkUpdate = async () => {
             try {
-                const res = await fetch('https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/manifest.json');
-                const data = await res.json();
-                const versionChanged = data.version && data.version !== CURRENT_VERSION;
-                const patchChanged = data.patch !== undefined && data.patch !== CURRENT_PATCH;
-                if (versionChanged || patchChanged) {
+                const autoUpdated = await checkForAutoUpdate((newVer) => {
                     setUpdateAvailable(true);
-                    console.log(`[Spicetify Jam] Update: ${data.version}${patchChanged && !versionChanged ? ' (hotfix ' + data.patch + ')' : ''
-                        }`);
+                });
+                if (autoUpdated) {
+                    setUpdateAvailable(true);
+                } else {
+                    const res = await fetch('https://raw.githubusercontent.com/xN1D3/spicetify-jam/main/manifest.json?t=' + Date.now());
+                    const data = await res.json();
+                    if (data?.version) {
+                        const isRemoteNewer = compareVersions(data.version, data.patch ?? 0, CURRENT_VERSION, CURRENT_PATCH) > 0;
+                        if (isRemoteNewer) {
+                            setUpdateAvailable(true);
+                            console.log(`[Spicetify Jam] Update available: ${data.version}${data.patch ? ' (hotfix ' + data.patch + ')' : ''}`);
+                        }
+                    }
                 }
             } catch (e) {
                 console.warn('[Spicetify Jam] Failed to check for updates');
@@ -660,6 +721,19 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const broadcast = useCallback((d: any) => conns.current.forEach(c => c.open && c.send(d)), []);
     const hostConn = useCallback(() => activeGuestConn.current || conns.current.get(refs.current.jamId) || Array.from(conns.current.values())[0], []);
+
+    const markChatRead = useCallback(() => {
+        setUnreadChatCount(0);
+        const me = cachedUser.current?.name || 'Friend';
+        if (refs.current.isHost) {
+            broadcast({ type: 'CHAT_READ', reader: me });
+        } else {
+            const c = hostConn();
+            if (c?.open) {
+                c.send({ type: 'CHAT_READ', reader: me });
+            }
+        }
+    }, [broadcast, hostConn]);
 
     const buildMembers = useCallback((): Member[] => {
         const me = cachedUser.current;
@@ -870,9 +944,16 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const seenSpotifyUris = new Set<string>();
         const now = Date.now();
 
+        // 1. Preserve or restore persisted fake/custom tracks from localStorage
+        const existingCustom = currentQueue.filter(t => t.isCustom || t.uri?.startsWith('jam:fake:') || t.isLocalAudio || t.uri?.startsWith('jam:local:'));
+        const sourceCustom = existingCustom.length > 0 ? existingCustom : loadCustomTracksFromStorage();
+        sourceCustom.forEach(t => {
+            mergedQueue.push(t);
+        });
+
         currentQueue.forEach(t => {
             if (t.isCustom || t.uri?.startsWith('jam:fake:') || t.isLocalAudio || t.uri?.startsWith('jam:local:')) {
-                mergedQueue.push(t);
+                // Already added above
             } else if (t.uri === curPlayingUri) {
                 // If it is playing right now in Now Playing, do not keep in queue
                 seenSpotifyUris.add(t.uri);
@@ -908,6 +989,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (isDiff) {
             queueRef.current = mergedQueue;
             setQueue(mergedQueue);
+            saveCustomTracksToStorage(mergedQueue);
             broadcast({ type: 'Q', queue: mergedQueue });
         }
 
@@ -1012,6 +1094,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const newQueue = queueRef.current.filter(t => t.uri !== uri);
             queueRef.current = newQueue;
             setQueue(newQueue);
+            saveCustomTracksToStorage(newQueue);
             broadcast({ type: 'Q', queue: newQueue });
             if (!uri.startsWith('jam:fake:') && !uri.startsWith('jam:local:')) {
                 try {
@@ -1075,19 +1158,54 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const updated = [...queueRef.current, fakeTrack];
             queueRef.current = updated;
             setQueue(updated);
+            saveCustomTracksToStorage(updated);
             broadcast({ type: 'Q', queue: updated });
             queueUserOrdered.current = Date.now();
             Spicetify.showNotification(`💬 Added "${trimmedTitle}" to Queue`);
         } else {
             const c = hostConn();
             if (c?.open) {
+                // Optimistic Add on Guest side for instant UI response
+                const optimisticQueue = [...queueRef.current, fakeTrack];
+                queueRef.current = optimisticQueue;
+                setQueue(optimisticQueue);
+                queueUserOrdered.current = Date.now();
+
                 c.send({
                     type: 'ADD_CUSTOM_Q',
                     track: fakeTrack
                 });
-                Spicetify.showNotification(`💬 Sent "${trimmedTitle}" to Host Queue`);
+                Spicetify.showNotification(`💬 Added "${trimmedTitle}" to Queue`);
             } else {
                 Spicetify.showNotification('Not connected to Host', true);
+            }
+        }
+    }, [broadcast, hostConn]);
+
+    const sendChatMessage = useCallback((text: string) => {
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        const me = cachedUser.current;
+        const msg: ChatMessage = {
+            id: 'msg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+            text: trimmed,
+            sender: {
+                name: me.name || (refs.current.isHost ? 'Host' : 'Guest'),
+                image: me.image || '',
+                isHost: refs.current.isHost
+            },
+            ts: Date.now(),
+            isOutgoing: true
+        };
+
+        setChatMessages(prev => [...prev, msg]);
+
+        if (refs.current.isHost) {
+            broadcast({ type: 'CHAT', message: msg });
+        } else {
+            const c = hostConn();
+            if (c?.open) {
+                c.send({ type: 'CHAT', message: msg });
             }
         }
     }, [broadcast, hostConn]);
@@ -1337,6 +1455,8 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!isHost) return;
         const v = !guestCreateSong;
         setGuestCreateSong(v);
+        refs.current.guestCreateSong = v;
+        try { localStorage.setItem('jam_guest_create_song', String(v)); } catch {}
         broadcast({ type: 'GCREATE', on: v });
     };
 
@@ -1538,8 +1658,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsHost(false);
         setGuestControls(false);
         refs.current.guestControls = false;
-        setGuestCreateSong(false);
-        refs.current.guestCreateSong = false;
+        const storedGuestCreate = (() => {
+            try {
+                const s = localStorage.getItem('jam_guest_create_song');
+                return s !== null ? s === 'true' : true;
+            } catch { return true; }
+        })();
+        setGuestCreateSong(storedGuestCreate);
+        refs.current.guestCreateSong = storedGuestCreate;
         setLocalAudioEnabled(false);
         refs.current.localAudioEnabled = false;
         setMembers([]);
@@ -1673,7 +1799,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 }
                 if (d.members) setMembers(d.members);
                 if (d.gc !== undefined) setGuestControls(d.gc);
-                if (d.gcreate !== undefined) setGuestCreateSong(d.gcreate);
+                if (d.gcreate !== undefined) { setGuestCreateSong(d.gcreate); r.guestCreateSong = d.gcreate; }
                 if (d.glocal !== undefined) setLocalAudioEnabled(d.glocal);
                 if (d.playing !== undefined) setIsPlaying(d.playing);
                 if (d.progress !== undefined) setProgress(d.progress);
@@ -1681,7 +1807,20 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 break;
             case 'MEMBERS': setMembers(d.members); break;
             case 'GCTRL': setGuestControls(d.on); break;
-            case 'GCREATE': setGuestCreateSong(d.on); break;
+            case 'GCREATE':
+                setGuestCreateSong(d.on);
+                r.guestCreateSong = d.on;
+                Spicetify.showNotification(d.on ? '✨ Host enabled Create Song' : 'Host disabled Create Song');
+                break;
+            case 'NOTIFY_ERR':
+                if (d.message) {
+                    Spicetify.showNotification(`⚠️ ${d.message}`, true);
+                    if (!r.isHost) {
+                        const c = hostConn();
+                        if (c?.open) c.send({ type: 'SYNC' });
+                    }
+                }
+                break;
             case 'GLOCAL': setLocalAudioEnabled(d.on); break;
             case 'CMD':
                 if (!r.isHost || !r.guestControls) return;
@@ -1804,7 +1943,10 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
             case 'ADD_LOCAL_FILE_Q':
                 if (r.isHost && d.track) {
-                    if (!r.guestCreateSong) return;
+                    if (!r.guestCreateSong) {
+                        conn.send({ type: 'NOTIFY_ERR', message: 'Host has disabled adding local files' });
+                        return;
+                    }
                     const guestSender = memberRegistry.current.get(conn.peer) || d.track.addedBy;
                     const trackWithSender: TrackInfo = {
                         ...d.track,
@@ -1813,6 +1955,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     const updated = [...queueRef.current, trackWithSender];
                     queueRef.current = updated;
                     setQueue(updated);
+                    saveCustomTracksToStorage(updated);
                     broadcast({ type: 'Q', queue: updated });
                     queueUserOrdered.current = Date.now();
                     Spicetify.showNotification(`📁 ${guestSender?.name || 'Friend'} added "${d.track.title}" to Queue`);
@@ -1974,7 +2117,10 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 break;
             case 'ADD_CUSTOM_Q':
                 if (r.isHost && d.track) {
-                    if (!r.guestCreateSong) return;
+                    if (!r.guestCreateSong) {
+                        conn.send({ type: 'NOTIFY_ERR', message: 'Host has disabled creating custom tracks' });
+                        return;
+                    }
                     const guestSender = memberRegistry.current.get(conn.peer) || d.track.addedBy;
                     const trackWithSender: TrackInfo = {
                         ...d.track,
@@ -1984,6 +2130,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     const updated = [...queueRef.current, trackWithSender];
                     queueRef.current = updated;
                     setQueue(updated);
+                    saveCustomTracksToStorage(updated);
                     broadcast({ type: 'Q', queue: updated });
                     queueUserOrdered.current = Date.now();
                     Spicetify.showNotification(`💬 ${guestSender?.name || 'Friend'} added "${d.track.title}" to Queue`);
@@ -1991,6 +2138,49 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 break;
             case 'RM_Q': if (r.isHost) removeFromQueue(d.uri, d.uid); break;
             case 'Q': setQueue(d.queue); break;
+            case 'CHAT':
+                if (d.message) {
+                    const incomingMsg: ChatMessage = {
+                        ...d.message,
+                        isOutgoing: false
+                    };
+                    setChatMessages(prev => {
+                        if (prev.some(m => m.id === incomingMsg.id)) return prev;
+                        return [...prev, incomingMsg];
+                    });
+                    if (incomingMsg.sender && (incomingMsg.sender.image || incomingMsg.sender.name)) {
+                        setLatestChatSender(incomingMsg.sender);
+                    }
+                    setUnreadChatCount(c => c + 1);
+
+                    if (r.isHost) {
+                        conns.current.forEach((peerConn) => {
+                            if (peerConn.open && peerConn.peer !== conn.peer) {
+                                peerConn.send({ type: 'CHAT', message: d.message });
+                            }
+                        });
+                    }
+                }
+                break;
+            case 'CHAT_READ':
+                if (d.reader) {
+                    setChatMessages(prev => prev.map(m => {
+                        if (m.isOutgoing) {
+                            const readBy = m.readBy ? [...m.readBy] : [];
+                            if (!readBy.includes(d.reader)) readBy.push(d.reader);
+                            return { ...m, isRead: true, readBy };
+                        }
+                        return m;
+                    }));
+                    if (r.isHost) {
+                        conns.current.forEach((peerConn) => {
+                            if (peerConn.open && peerConn.peer !== conn.peer) {
+                                peerConn.send({ type: 'CHAT_READ', reader: d.reader });
+                            }
+                        });
+                    }
+                }
+                break;
             case 'PING': conn.send({ type: 'PONG', ts: d.ts }); break;
             case 'PONG': {
                 const rtt = Math.max(0, Date.now() - d.ts);
@@ -2293,7 +2483,9 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 setJamId(id); setIsHost(true); setConnected(true); setError(null);
                 setReconnecting(false);
                 setHostName(me.name); setMembers([{ id: 'host', name: me.name, image: me.image, isHost: true, status: 'active' }]);
-                const t = getTrack(); if (t) { setNowPlaying(t); refs.current.targetUri = t.uri || null; }
+                const hostUser = { name: me.name || 'Host', image: me.image || '' };
+                currentNpAddedBy.current = hostUser;
+                const t = getTrack(hostUser); if (t) { setNowPlaying(t); refs.current.targetUri = t.uri || null; }
                 setQueue([]);
                 queueRef.current = [];
                 addedByMap.current.clear();
@@ -2463,7 +2655,16 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         playNextInJamQueue();
                         return;
                     }
-                    const t = getTrack(); if (t) setNowPlaying(t);
+                    let by = uri ? addedByMap.current.get(uri) : undefined;
+                    if (!by && uri) {
+                        const qItem = queueRef.current.find(item => item.uri === uri);
+                        if (qItem?.addedBy) by = qItem.addedBy;
+                    }
+                    const hostUser = { name: cachedUser.current.name || 'Host', image: cachedUser.current.image || '' };
+                    const finalBy = by || hostUser;
+                    currentNpAddedBy.current = finalBy;
+
+                    const t = getTrack(finalBy); if (t) setNowPlaying(t);
                     refs.current.targetUri = uri || null;
                     // Clear queue attribution and remove track that just started playing from queue
                     if (uri) {
@@ -2549,7 +2750,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     const dur = Spicetify.Player.getDuration();
                     broadcast({ type: 'PS', p: playing, pos, dur, ts: Date.now() });
                     if (playing) {
-                        broadcast({ type: 'PLAY', uri: Spicetify.Player.data?.item?.uri || refs.current.targetUri || '', pos, ts: Date.now(), np: getTrack() });
+                        broadcast({ type: 'PLAY', uri: Spicetify.Player.data?.item?.uri || refs.current.targetUri || '', pos, ts: Date.now(), np: getTrack(currentNpAddedBy.current || undefined) });
                     } else {
                         broadcast({ type: 'PAUSE' });
                     }
@@ -2672,6 +2873,15 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
     }, []);
 
+    const applyUpdate = useCallback(() => {
+        if (window.Spicetify?.showNotification) {
+            window.Spicetify.showNotification('✨ Reloading Spotify to apply latest update...');
+        }
+        setTimeout(() => {
+            window.location.reload();
+        }, 300);
+    }, []);
+
     useEffect(() => {
         const hash = window.location.hash.slice(1);
         if (hash.startsWith('jam=')) { const id = hash.split('=')[1]; if (id) joinJam(id); }
@@ -2681,7 +2891,9 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         <Ctx.Provider value={{
             isHost, jamId, members, connected, error, nowPlaying, hostName, queue,
             guestControls, guestCreateSong, localAudioEnabled, isPlaying, progress, duration, ping, updateAvailable,
+            applyUpdate,
             reconnecting, savedHostId, savedSession, resumeSession,
+            chatMessages, sendChatMessage, latestChatSender, unreadChatCount, markChatRead,
             startJam, joinJam, leaveJam, addToQueue, removeFromQueue,
             addCustomTrack, addLocalFileTrack, moveInQueue, requestSync, jumpToTrack, seekTo, kickMember,
             toggleGuestControls, toggleGuestCreateSong, toggleLocalAudio, play, pause, next, prev

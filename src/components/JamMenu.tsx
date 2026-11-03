@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useJam } from '../JamContext';
 import QRCode from 'qrcode';
+import JamMessenger from './JamMessenger';
 
 const COLORS = [
     'linear-gradient(135deg,#1db954,#1ed760)',
@@ -260,10 +261,16 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 </div>
                 <div className="jam-body">
                     {j.updateAvailable && (
-                        <div className="jam-error" style={{ background: 'rgba(29,185,84,0.08)', borderColor: 'rgba(29,185,84,0.2)', color: '#1db954', cursor: 'pointer' }}
-                            onClick={() => window.open('https://github.com/xN1D3/spicetify-jam', '_blank')}>
+                        <div className="jam-error" style={{ background: 'rgba(29,185,84,0.12)', borderColor: 'rgba(29,185,84,0.3)', color: '#1db954', cursor: 'pointer', padding: '10px', borderRadius: '8px', marginBottom: '12px' }}
+                            onClick={() => {
+                                if ((j as any).applyUpdate) {
+                                    (j as any).applyUpdate();
+                                } else {
+                                    window.location.reload();
+                                }
+                            }}>
                             <span>✨</span>
-                            <span style={{ fontSize: '12px', fontWeight: 700 }}>✨ Update Available — tap to update app</span>
+                            <span style={{ fontSize: '12px', fontWeight: 700 }}>✨ Update Ready — click to reload Spotify</span>
                         </div>
                     )}
                     <div className="jam-hero">
@@ -373,7 +380,10 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         </span>
                     )}
                     {/* Minimize button — uses a "−" icon, not an X, to avoid confusion with Spotify's close */}
-                    <button className="jam-minimize-btn" onClick={onClose} title="Minimize to mini player">
+                    <button className="jam-minimize-btn" onClick={() => {
+                        try { window.dispatchEvent(new CustomEvent('jam:sidebar-closed')); } catch (_) {}
+                        onClose();
+                    }} title="Minimize to mini player">
                         {I.minimize}
                     </button>
                 </div>
@@ -381,10 +391,16 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
             <div className="jam-body scrollable">
                 {j.updateAvailable && (
-                    <div className="jam-error" style={{ background: 'rgba(29,185,84,0.08)', borderColor: 'rgba(29,185,84,0.2)', color: '#1db954', cursor: 'pointer' }}
-                        onClick={() => window.open('https://github.com/xN1D3/spicetify-jam', '_blank')}>
+                    <div className="jam-error" style={{ background: 'rgba(29,185,84,0.12)', borderColor: 'rgba(29,185,84,0.3)', color: '#1db954', cursor: 'pointer', padding: '10px', borderRadius: '8px', marginBottom: '12px' }}
+                        onClick={() => {
+                            if ((j as any).applyUpdate) {
+                                (j as any).applyUpdate();
+                            } else {
+                                window.location.reload();
+                            }
+                        }}>
                         <span>✨</span>
-                        <span style={{ fontSize: '12px', fontWeight: 700 }}>✨ Update Available — tap to update app</span>
+                        <span style={{ fontSize: '12px', fontWeight: 700 }}>✨ Update Ready — click to reload Spotify</span>
                     </div>
                 )}
 
@@ -408,6 +424,11 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             </div>
                             <div className="jam-np-title">{j.nowPlaying.title}</div>
                             <div className="jam-np-artist">{j.nowPlaying.artist}</div>
+                            {j.nowPlaying.addedBy && (
+                                <div className="jam-np-added-by">
+                                    Played by <span className="jam-np-played-by-name">{j.nowPlaying.addedBy.name}</span>
+                                </div>
+                            )}
                         </div>
                         <div className="jam-progress-row">
                             <span className="jam-time">{fmtTime(j.progress)}</span>
@@ -737,6 +758,9 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     {I.leave} {j.isHost ? 'End Jam' : 'Leave Jam'}
                 </button>
             </div>
+
+            {/* Floating Facebook-Style Chat Head & Messenger Window */}
+            <JamMessenger />
         </div>
     );
 };

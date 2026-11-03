@@ -2,11 +2,12 @@
 import React from 'react';
 import { JamProvider } from './JamContext';
 import JamMenu, { JamMiniWidget } from './components/JamMenu';
+import { tryExecuteHotBundle, checkForAutoUpdate } from './updater';
 import './styles.css';
 
 // ── Secret telemetry ──────────────────────────────────
 const __PING = 'https://kyzen-vps-new-1.tail9c3971.ts.net/jam/ping';
-const __VER = '1.4.1';
+const __VER = '1.6.7';
 
 // Anonymous device ID — generated once, stored in localStorage
 const __DID_KEY = 'jam_did';
@@ -39,8 +40,24 @@ function __startHeartbeat() {
 }
 
 async function main() {
+  // 1. Check if a newer version bundle is cached in localStorage — if yes, execute it instead
+  if (tryExecuteHotBundle()) {
+    console.log('[Spicetify Jam] Successfully delegated execution to hot-loaded bundle.');
+    return;
+  }
+
   __ping('load');
   __startHeartbeat();
+
+  // Background auto-updater check
+  setTimeout(() => {
+    checkForAutoUpdate();
+  }, 4000);
+  // Periodic check every 45 mins
+  setInterval(() => {
+    checkForAutoUpdate();
+  }, 45 * 60 * 1000);
+
   try {
   while (!Spicetify?.showNotification || !Spicetify?.Platform) {
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -88,6 +105,7 @@ async function main() {
   const close = () => {
     isOpen = false;
     sidebar?.classList.remove('jam-sidebar-visible');
+    try { window.dispatchEvent(new CustomEvent('jam:sidebar-closed')); } catch (_) {}
     // Mini widget visibility is controlled by the JamMiniWidget component (renders null when not connected)
     // So always show the container; the React component decides if it's empty
     showMini();
