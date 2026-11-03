@@ -1,6 +1,6 @@
 {
   "name": "spicetify-jam",
-  "version": "1.6.8",
+  "version": "1.6.9",
   "private": true,
   "scripts": {
     "build": "spicetify-creator && spicetify-creator --out=dist --minify",

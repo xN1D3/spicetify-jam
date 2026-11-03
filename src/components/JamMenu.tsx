@@ -141,6 +141,8 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
     // Listeners panel is open by default; user can collapse it
     const [listenersOpen, setListenersOpen] = useState(true);
+    // Invite panel is collapsed by default; user can expand it
+    const [inviteOpen, setInviteOpen] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [showCustomForm, setShowCustomForm] = useState(false);
     const [customTitle, setCustomTitle] = useState('');
@@ -540,27 +542,43 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 </div>
 
                 <div className="jam-section-card">
-                    <div className="jam-section-title">{j.isHost ? 'Invite' : 'Room Info'}</div>
-                    <div className="jam-id-row">
-                        <span className="jam-id-code">{j.jamId}</span>
-                        <button
-                            className={`jam-icon-btn ${copied ? 'green' : ''}`}
-                            onClick={() => { copy(j.jamId, 'Copied!'); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-                        >{copied ? I.check : I.copy}</button>
-                    </div>
-                    <div className="jam-share-row">
-                        <button className="jam-btn outline flex-1"
-                            onClick={() => copy(`${window.location.origin}${window.location.pathname}#jam=${j.jamId}`, 'Link copied!')}>
-                            {I.link} Copy Link
-                        </button>
-                        <button className="jam-btn outline flex-1" onClick={() => setShowQr(v => !v)}>
-                            {I.qr} {showQr ? 'Hide QR' : 'QR Code'}
-                        </button>
-                    </div>
-                    {showQr && qrUrl && (
-                        <div className="jam-qr-box">
-                            <img src={qrUrl} alt="QR" />
-                            <div className="jam-qr-label">Scan to join</div>
+                    <button
+                        className="jam-section-title jam-collapsible-header"
+                        onClick={() => setInviteOpen(v => !v)}
+                        aria-expanded={inviteOpen}
+                    >
+                        <span className="jam-section-title-inner">
+                            {j.isHost ? 'Invite' : 'Room Info'}
+                        </span>
+                        <span className="jam-chevron">
+                            {inviteOpen ? I.chevronUp : I.chevronDown}
+                        </span>
+                    </button>
+
+                    {inviteOpen && (
+                        <div className="jam-listeners-body">
+                            <div className="jam-id-row">
+                                <span className="jam-id-code">{j.jamId}</span>
+                                <button
+                                    className={`jam-icon-btn ${copied ? 'green' : ''}`}
+                                    onClick={() => { copy(j.jamId, 'Copied!'); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                                >{copied ? I.check : I.copy}</button>
+                            </div>
+                            <div className="jam-share-row">
+                                <button className="jam-btn outline flex-1"
+                                    onClick={() => copy(`${window.location.origin}${window.location.pathname}#jam=${j.jamId}`, 'Link copied!')}>
+                                    {I.link} Copy Link
+                                </button>
+                                <button className="jam-btn outline flex-1" onClick={() => setShowQr(v => !v)}>
+                                    {I.qr} {showQr ? 'Hide QR' : 'QR Code'}
+                                </button>
+                            </div>
+                            {showQr && qrUrl && (
+                                <div className="jam-qr-box">
+                                    <img src={qrUrl} alt="QR" />
+                                    <div className="jam-qr-label">Scan to join</div>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
