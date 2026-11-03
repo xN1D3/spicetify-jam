@@ -639,6 +639,11 @@
     letter-spacing: 0.3px;
     cursor: default;
 }
+.jam-member-ver-badge.legacy {
+    background: rgba(245, 166, 35, 0.15);
+    color: #ffc857;
+    border-color: rgba(245, 166, 35, 0.35);
+}
 .jam-member-role    { font-size: 10px; color: rgba(255,255,255,0.3); margin-top: 1px; }
 .jam-member-status {
     display: inline-flex;

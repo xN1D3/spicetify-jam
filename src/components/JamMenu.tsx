@@ -510,20 +510,21 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                     <div
                                         className="jam-avatar"
                                         style={{ background: nameColor(m.name), cursor: 'pointer' }}
-                                        title={m.version ? `${m.name} · Version ${m.version}` : `${m.name} · Version unknown`}
+                                        title={m.version ? `${m.name} · Version ${m.version}` : `${m.name} · Older version (< 1.7.0)`}
                                     >
                                         {m.image
-                                            ? <img src={m.image} alt="" title={m.version ? `${m.name} · Version ${m.version}` : `${m.name} · Version unknown`} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                                            ? <img src={m.image} alt="" title={m.version ? `${m.name} · Version ${m.version}` : `${m.name} · Older version (< 1.7.0)`} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                                             : safeInitial(m.name)}
                                     </div>
                                     <div className="jam-member-info">
                                         <div className="jam-member-name">
                                             <span>{m.name || 'Listener'}</span>
-                                            {m.version && (
-                                                <span className="jam-member-ver-badge" title={`Client Version: v${m.version}`}>
-                                                    v{m.version}
-                                                </span>
-                                            )}
+                                            <span
+                                                className={`jam-member-ver-badge ${m.version ? '' : 'legacy'}`}
+                                                title={m.version ? `Client Version: v${m.version}` : 'Running older version (< 1.7.0) — needs Spotify restart to update'}
+                                            >
+                                                {m.version ? `v${m.version}` : 'v<1.7.0'}
+                                            </span>
                                         </div>
                                         {(() => {
                                             const isHostMember = !!m.isHost;

@@ -17,7 +17,7 @@ interface TrackInfo {
     duration?: number;
     addedBy?: { name: string; image: string };
 }
-export const CURRENT_JAM_VERSION = '1.7.0';
+export const CURRENT_JAM_VERSION = '1.7.1';
 export const CURRENT_PATCH = 0;
 
 export interface Member {
@@ -559,16 +559,30 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const [nowPlaying, setNowPlaying] = useState<TrackInfo | null>(null);
     const [hostName, setHostName] = useState('Host');
     const [queue, setQueue] = useState<TrackInfo[]>([]);
-    const [guestControls, setGuestControls] = useState(false);
-    const [guestCreateSong, setGuestCreateSong] = useState<boolean>(() => {
+    const [guestControls, setGuestControls] = useState<boolean>(() => {
         try {
-            const stored = localStorage.getItem('jam_guest_create_song');
-            return stored !== null ? stored === 'true' : true; // Default true out-of-the-box
+            const stored = localStorage.getItem('jam_guest_controls');
+            return stored !== null ? stored === 'true' : true;
         } catch {
             return true;
         }
     });
-    const [localAudioEnabled, setLocalAudioEnabled] = useState(false);
+    const [guestCreateSong, setGuestCreateSong] = useState<boolean>(() => {
+        try {
+            const stored = localStorage.getItem('jam_guest_create_song');
+            return stored !== null ? stored === 'true' : true;
+        } catch {
+            return true;
+        }
+    });
+    const [localAudioEnabled, setLocalAudioEnabled] = useState<boolean>(() => {
+        try {
+            const stored = localStorage.getItem('jam_local_audio_enabled');
+            return stored !== null ? stored === 'true' : true;
+        } catch {
+            return true;
+        }
+    });
     const [isPlaying, setIsPlaying] = useState(false);
     const [progress, setProgress] = useState(0);
     const [duration, setDuration] = useState(0);
@@ -588,7 +602,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isHost: false,
         connected: false,
         reconnecting: false,
-        guestControls: false,
+        guestControls: (() => {
+            try {
+                const stored = localStorage.getItem('jam_guest_controls');
+                return stored !== null ? stored === 'true' : true;
+            } catch {
+                return true;
+            }
+        })(),
         guestCreateSong: (() => {
             try {
                 const stored = localStorage.getItem('jam_guest_create_song');
@@ -597,7 +618,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 return true;
             }
         })(),
-        localAudioEnabled: false,
+        localAudioEnabled: (() => {
+            try {
+                const stored = localStorage.getItem('jam_local_audio_enabled');
+                return stored !== null ? stored === 'true' : true;
+            } catch {
+                return true;
+            }
+        })(),
         jamId: '',
         targetUri: null as string | null,
         ignoreNextSongChange: false,
@@ -891,7 +919,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 if (pingCounter >= 5) {
                     pingCounter = 0;
                     const c = hostConn();
-                    if (c?.open) c.send({ type: 'PING', ts: now });
+                    if (c?.open) c.send({ type: 'PING', ts: now, version: CURRENT_JAM_VERSION });
                 }
 
                 if (lastHostMsg.current > 0 && now - lastHostMsg.current > 15000) {
@@ -1468,6 +1496,8 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!isHost) return;
         const v = !guestControls;
         setGuestControls(v);
+        refs.current.guestControls = v;
+        try { localStorage.setItem('jam_guest_controls', String(v)); } catch {}
         broadcast({ type: 'GCTRL', on: v });
     };
 
@@ -1485,6 +1515,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const v = !localAudioEnabled;
         setLocalAudioEnabled(v);
         refs.current.localAudioEnabled = v;
+        try { localStorage.setItem('jam_local_audio_enabled', String(v)); } catch {}
         broadcast({ type: 'GLOCAL', on: v });
     };
 
@@ -2199,11 +2230,45 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     }
                 }
                 break;
-            case 'PING': conn.send({ type: 'PONG', ts: d.ts }); break;
+            case 'HEARTBEAT':
+                if (!r.isHost) {
+                    lastHostMsg.current = Date.now();
+                    if (d.version) {
+                        setMembers(prev => prev.map(m => m.isHost && (!m.version || m.version !== d.version) ? { ...m, version: d.version } : m));
+                    }
+                    conn.send({ type: 'HEARTBEAT_ACK', version: CURRENT_JAM_VERSION });
+                }
+                break;
+            case 'HEARTBEAT_ACK':
+                if (r.isHost && d.version) {
+                    const mem = memberRegistry.current.get(conn.peer);
+                    if (mem && mem.version !== d.version) {
+                        mem.version = d.version;
+                        const all = buildMembers();
+                        setMembers(all);
+                        broadcast({ type: 'MEMBERS', members: all });
+                    }
+                }
+                break;
+            case 'PING':
+                if (r.isHost && d.version) {
+                    const mem = memberRegistry.current.get(conn.peer);
+                    if (mem && mem.version !== d.version) {
+                        mem.version = d.version;
+                        const all = buildMembers();
+                        setMembers(all);
+                        broadcast({ type: 'MEMBERS', members: all });
+                    }
+                }
+                conn.send({ type: 'PONG', ts: d.ts, version: CURRENT_JAM_VERSION });
+                break;
             case 'PONG': {
                 const rtt = Math.max(0, Date.now() - d.ts);
                 setPing(rtt);
                 r.ping = rtt;
+                if (!r.isHost && d.version) {
+                    setMembers(prev => prev.map(m => m.isHost && (!m.version || m.version !== d.version) ? { ...m, version: d.version } : m));
+                }
                 break;
             }
             case 'SYNC':
