@@ -141,6 +141,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
     // Listeners panel is open by default; user can collapse it
     const [listenersOpen, setListenersOpen] = useState(true);
+    const [showSettings, setShowSettings] = useState(false);
     const [showCustomForm, setShowCustomForm] = useState(false);
     const [customTitle, setCustomTitle] = useState('');
     const [customArtist, setCustomArtist] = useState('');
@@ -379,6 +380,15 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                             {j.ping < 0 ? '…' : `${j.ping}ms`}
                         </span>
                     )}
+                    {j.isHost && (
+                        <button
+                            className={`jam-minimize-btn${showSettings ? ' active' : ''}`}
+                            onClick={() => setShowSettings(v => !v)}
+                            title="Session Settings"
+                        >
+                            {I.settings}
+                        </button>
+                    )}
                     {/* Minimize button — uses a "−" icon, not an X, to avoid confusion with Spotify's close */}
                     <button className="jam-minimize-btn" onClick={() => {
                         try { window.dispatchEvent(new CustomEvent('jam:sidebar-closed')); } catch (_) {}
@@ -390,6 +400,29 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             </div>
 
             <div className="jam-body scrollable">
+                {j.isHost && showSettings && (
+                    <div className="jam-section-card" style={{ borderColor: 'rgba(29, 185, 84, 0.3)', background: 'rgba(29, 185, 84, 0.04)' }}>
+                        <div className="jam-section-title" style={{ color: '#1ed760' }}>{I.settings} Session Settings</div>
+                        <div className="jam-setting-row">
+                            <span>Guest Playback Controls</span>
+                            <button className={`jam-toggle ${j.guestControls ? 'on' : ''}`} onClick={j.toggleGuestControls}>
+                                <div className="jam-toggle-knob" />
+                            </button>
+                        </div>
+                        <div className="jam-setting-row">
+                            <span>Create Song</span>
+                            <button className={`jam-toggle ${j.guestCreateSong ? 'on' : ''}`} onClick={j.toggleGuestCreateSong}>
+                                <div className="jam-toggle-knob" />
+                            </button>
+                        </div>
+                        <div className="jam-setting-row">
+                            <span>Local Audio</span>
+                            <button className={`jam-toggle ${j.localAudioEnabled ? 'on' : ''}`} onClick={j.toggleLocalAudio}>
+                                <div className="jam-toggle-knob" />
+                            </button>
+                        </div>
+                    </div>
+                )}
                 {j.updateAvailable && (
                     <div className="jam-error" style={{ background: 'rgba(29,185,84,0.12)', borderColor: 'rgba(29,185,84,0.3)', color: '#1db954', cursor: 'pointer', padding: '10px', borderRadius: '8px', marginBottom: '12px' }}
                         onClick={() => {
@@ -505,30 +538,6 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         </div>
                     )}
                 </div>
-
-                {j.isHost && (
-                    <div className="jam-section-card">
-                        <div className="jam-section-title">{I.settings} Session Settings</div>
-                        <div className="jam-setting-row">
-                            <span>Guest Playback Controls</span>
-                            <button className={`jam-toggle ${j.guestControls ? 'on' : ''}`} onClick={j.toggleGuestControls}>
-                                <div className="jam-toggle-knob" />
-                            </button>
-                        </div>
-                        <div className="jam-setting-row">
-                            <span>Create Song</span>
-                            <button className={`jam-toggle ${j.guestCreateSong ? 'on' : ''}`} onClick={j.toggleGuestCreateSong}>
-                                <div className="jam-toggle-knob" />
-                            </button>
-                        </div>
-                        <div className="jam-setting-row">
-                            <span>Local Audio</span>
-                            <button className={`jam-toggle ${j.localAudioEnabled ? 'on' : ''}`} onClick={j.toggleLocalAudio}>
-                                <div className="jam-toggle-knob" />
-                            </button>
-                        </div>
-                    </div>
-                )}
 
                 <div className="jam-section-card">
                     <div className="jam-section-title">{j.isHost ? 'Invite' : 'Room Info'}</div>

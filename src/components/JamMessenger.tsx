@@ -10,6 +10,12 @@ const nameColor = (name: string) => {
 };
 const safeInitial = (name: string) => ((name || '?').trim()[0] || '?').toUpperCase();
 
+// Format 24-hour time (e.g. 20:57)
+const fmtTime24 = (ts: number) => {
+    const d = new Date(ts);
+    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+};
+
 // Mini Web Audio pop sound
 function playSound(freq = 600) {
     try {
@@ -66,6 +72,23 @@ export const JamMessenger: React.FC = () => {
             if (teaserTimer.current) clearTimeout(teaserTimer.current);
         };
     }, []);
+
+    // Friends in the room (excluding ourselves)
+    const friends = j.members.filter(m => (j.isHost ? !m.isHost : m.id !== 'me'));
+    const [friendRotateIndex, setFriendRotateIndex] = useState(0);
+
+    // Rotate friend avatar in header every 1 minute if multiple friends
+    useEffect(() => {
+        if (friends.length <= 1) return;
+        const interval = setInterval(() => {
+            setFriendRotateIndex(prev => (prev + 1) % friends.length);
+        }, 60 * 1000);
+        return () => clearInterval(interval);
+    }, [friends.length]);
+
+    const activeHeaderFriend = friends.length > 0
+        ? friends[friendRotateIndex % friends.length]
+        : null;
 
     // Watch incoming messages
     useEffect(() => {
@@ -200,15 +223,18 @@ export const JamMessenger: React.FC = () => {
                 <div className="jam-m-header">
                     <div className="jam-m-header-left">
                         <div className="jam-m-avatar-group">
-                            {recentMsgSender?.image ? (
+                            {activeHeaderFriend?.image ? (
                                 <img
-                                    src={recentMsgSender.image}
+                                    src={activeHeaderFriend.image}
                                     className="jam-m-avatar-sm"
-                                    alt="Active Friend"
+                                    alt={activeHeaderFriend.name}
+                                    onError={(e) => {
+                                        (e.target as HTMLElement).style.display = 'none';
+                                    }}
                                 />
-                            ) : recentMsgSender?.name ? (
-                                <div className="jam-m-avatar-initial sm" style={{ background: nameColor(recentMsgSender.name) }}>
-                                    {safeInitial(recentMsgSender.name)}
+                            ) : activeHeaderFriend?.name ? (
+                                <div className="jam-m-avatar-initial sm" style={{ background: nameColor(activeHeaderFriend.name) }}>
+                                    {safeInitial(activeHeaderFriend.name)}
                                 </div>
                             ) : (
                                 <div className="jam-m-avatar-sm" style={{ background: '#181818', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -221,8 +247,12 @@ export const JamMessenger: React.FC = () => {
                             <span className="jam-m-online-indicator" />
                         </div>
                         <div>
-                            <div className="jam-m-title">Jam Messenger</div>
-                            <div className="jam-m-subtitle">{j.members.length} Listening · P2P Real-time</div>
+                            <div className="jam-m-title">
+                                {friends.length === 1 && activeHeaderFriend ? activeHeaderFriend.name : 'Jam Messenger'}
+                            </div>
+                            <div className="jam-m-subtitle">
+                                {j.members.length} Listening · {activeHeaderFriend?.name ? activeHeaderFriend.name : 'P2P Real-time'}
+                            </div>
                         </div>
                     </div>
                     <div className="jam-m-header-actions">
@@ -246,7 +276,7 @@ export const JamMessenger: React.FC = () => {
 
                     {j.chatMessages.map((msg, i) => {
                         const isMe = msg.isOutgoing;
-                        const timeStr = new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        const timeStr = fmtTime24(msg.ts);
                         return (
                             <div key={msg.id} className={`jam-m-msg${isMe ? ' outgoing' : ' incoming'}`}>
                                 {!isMe && (
