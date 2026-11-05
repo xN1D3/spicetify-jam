@@ -17,7 +17,7 @@ interface TrackInfo {
     duration?: number;
     addedBy?: { name: string; image: string };
 }
-export const CURRENT_JAM_VERSION = '1.7.1';
+export const CURRENT_JAM_VERSION = '1.7.2';
 export const CURRENT_PATCH = 0;
 
 export interface Member {
@@ -888,16 +888,6 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                             }
                         } else {
                             signalingReconnectCounter = 0;
-                            signalingPingCounter++;
-                            if (signalingPingCounter >= 25) { // send heartbeat every 10s (25 * 400ms)
-                                signalingPingCounter = 0;
-                                try {
-                                    const sock = (peerRef.current as any).socket;
-                                    if (sock?._ws && sock._ws.readyState === WebSocket.OPEN) {
-                                        sock._ws.send(JSON.stringify({ type: 'HEARTBEAT' }));
-                                    }
-                                } catch { }
-                            }
                         }
                     }
                 } catch { }
@@ -1707,8 +1697,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setConnected(false);
         setJamId('');
         setIsHost(false);
-        setGuestControls(false);
-        refs.current.guestControls = false;
+        const defaultGuestControls = (() => {
+            try {
+                const s = localStorage.getItem('jam_guest_controls');
+                return s !== null ? s === 'true' : true;
+            } catch { return true; }
+        })();
+        setGuestControls(defaultGuestControls);
+        refs.current.guestControls = defaultGuestControls;
         const storedGuestCreate = (() => {
             try {
                 const s = localStorage.getItem('jam_guest_create_song');
@@ -1717,8 +1713,14 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         })();
         setGuestCreateSong(storedGuestCreate);
         refs.current.guestCreateSong = storedGuestCreate;
-        setLocalAudioEnabled(false);
-        refs.current.localAudioEnabled = false;
+        const defaultLocalAudio = (() => {
+            try {
+                const s = localStorage.getItem('jam_local_audio_enabled');
+                return s !== null ? s === 'true' : true;
+            } catch { return true; }
+        })();
+        setLocalAudioEnabled(defaultLocalAudio);
+        refs.current.localAudioEnabled = defaultLocalAudio;
         setMembers([]);
         setQueue([]);
         queueRef.current = [];
@@ -2565,6 +2567,22 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 } catch { }
                 setJamId(id); setIsHost(true); setConnected(true); setError(null);
                 setReconnecting(false);
+                const gc = (() => {
+                    try { const s = localStorage.getItem('jam_guest_controls'); return s !== null ? s === 'true' : true; } catch { return true; }
+                })();
+                const gcs = (() => {
+                    try { const s = localStorage.getItem('jam_guest_create_song'); return s !== null ? s === 'true' : true; } catch { return true; }
+                })();
+                const la = (() => {
+                    try { const s = localStorage.getItem('jam_local_audio_enabled'); return s !== null ? s === 'true' : true; } catch { return true; }
+                })();
+                setGuestControls(gc);
+                refs.current.guestControls = gc;
+                setGuestCreateSong(gcs);
+                refs.current.guestCreateSong = gcs;
+                setLocalAudioEnabled(la);
+                refs.current.localAudioEnabled = la;
+
                 setHostName(me.name); setMembers([{ id: 'host', name: me.name, image: me.image, isHost: true, status: 'active', version: CURRENT_JAM_VERSION }]);
                 const hostUser = { name: me.name || 'Host', image: me.image || '' };
                 currentNpAddedBy.current = hostUser;
@@ -2590,6 +2608,17 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             });
             p.on('error', e => {
                 const errType = (e as any).type;
+                if (refs.current.isHost && refs.current.connected) {
+                    console.warn('[Jam] Host signaling error while room is live (keeping room alive):', errType);
+                    if (p.disconnected && !p.destroyed) {
+                        setTimeout(() => {
+                            if (refs.current.connected && !p.destroyed && p.disconnected) {
+                                try { p.reconnect(); } catch { }
+                            }
+                        }, 2500);
+                    }
+                    return;
+                }
                 if (errType === 'id-taken' && retries < 20) {
                     try { p.destroy(); } catch { }
                     setError(`Waiting for previous room session to release (${retries + 1}/20)...`);
@@ -2597,13 +2626,6 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                         startJam(targetId, retries + 1).then(res).catch(rej);
                     }, 1500);
                 } else {
-                    if (refs.current.isHost && refs.current.connected) {
-                        console.warn('[Jam] Host signaling error (recovering):', errType);
-                        if (p.disconnected && !p.destroyed) {
-                            setTimeout(() => { try { p.reconnect(); } catch { } }, 2000);
-                        }
-                        return;
-                    }
                     setError(`Connection error: ${errType || 'unknown'}`);
                     rej(e);
                 }
