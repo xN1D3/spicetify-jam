@@ -1,7 +1,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import Peer, { DataConnection } from 'peerjs';
-import { localAudio } from './services/LocalAudioEngine';
+import { localAudio, canPlayAudioFile, detectMimeType } from './services/LocalAudioEngine';
 import { checkForAutoUpdate, compareVersions } from './updater';
 
 interface TrackInfo {
@@ -17,7 +17,7 @@ interface TrackInfo {
     duration?: number;
     addedBy?: { name: string; image: string };
 }
-export const CURRENT_JAM_VERSION = '1.7.2';
+export const CURRENT_JAM_VERSION = '1.7.3';
 export const CURRENT_PATCH = 0;
 
 export interface Member {
@@ -1286,6 +1286,12 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             return false;
         }
 
+        const check = canPlayAudioFile(file.name, file.type);
+        if (!check.supported) {
+            Spicetify.showNotification(`⚠️ Spotify (CEF) ไม่รองรับ Codec ของไฟล์นี้ (${check.reason || 'กรุณาใช้ .mp3, .flac หรือ .wav'})`, true);
+            return false;
+        }
+
         try {
             const record = await localAudio.registerLocalFile(file);
             const sender = {
@@ -1962,7 +1968,7 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     title: d.title,
                     artist: d.artist,
                     duration: d.duration,
-                    mimeType: d.mimeType || 'audio/mpeg',
+                    mimeType: detectMimeType(d.title, d.mimeType),
                     totalChunks: d.totalChunks,
                     receivedChunks: new Array(d.totalChunks).fill(null),
                     count: 0
@@ -1981,7 +1987,8 @@ export const JamProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                             blob,
                             incoming.title,
                             incoming.artist,
-                            incoming.duration
+                            incoming.duration,
+                            incoming.mimeType
                         );
                         incomingFiles.current.delete(d.localId);
 

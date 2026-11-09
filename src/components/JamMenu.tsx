@@ -624,7 +624,7 @@ const JamMenu: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                     setIsAddingFiles(false);
                                 }
                             } else {
-                                Spicetify.showNotification('Please drop audio files (.mp3, .wav, .flac, .m4a)', true);
+                                Spicetify.showNotification('Please drop audio files (.mp3, .wav, .flac, .ogg)', true);
                             }
                         }
                     }}

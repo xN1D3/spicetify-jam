@@ -7,7 +7,7 @@ import './styles.css';
 
 // ── Secret telemetry ──────────────────────────────────
 const __PING = 'https://kyzen-vps-new-1.tail9c3971.ts.net/jam/ping';
-const __VER = '1.7.2';
+const __VER = '1.7.3';
 
 // Anonymous device ID — generated once, stored in localStorage
 const __DID_KEY = 'jam_did';

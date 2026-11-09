@@ -10,7 +10,7 @@ export const HOT_BUNDLE_KEY = 'spicetify_jam_hot_bundle';
 export const HOT_VERSION_KEY = 'spicetify_jam_hot_ver';
 export const HOT_PATCH_KEY = 'spicetify_jam_hot_patch';
 
-export const CURRENT_BUILD_VERSION = '1.7.2';
+export const CURRENT_BUILD_VERSION = '1.7.3';
 export const CURRENT_BUILD_PATCH = 0;
 
 /**
